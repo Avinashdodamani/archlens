@@ -1,0 +1,40 @@
+# ─── Secrets / Environment ───────────────────────────────
+.env
+.env.local
+.env.*.local
+*.pem
+*.key
+aws-credentials*
+**/secrets*
+
+# ─── Node / Frontend ─────────────────────────────────────
+node_modules/
+dist/
+build/
+.vite/
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# ─── Python / Lambda ─────────────────────────────────────
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+.venv/
+venv/
+function.zip
+*.zip
+
+# ─── OS / Editor ─────────────────────────────────────────
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+*.swp
+
+# ─── Build artifacts / temp ──────────────────────────────
+_awscheck/
+scan_out.json
+*.tmp

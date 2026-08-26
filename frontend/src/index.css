@@ -1,0 +1,230 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  :root {
+    --color-primary: #1A56DB;
+    --color-dark-bg: #1F2A37;
+    --color-dark-surface: #111827;
+  }
+
+  /* Dark mode (default) */
+  .dark body,
+  body {
+    @apply bg-dark-950 text-gray-100 font-sans;
+  }
+
+  /* Light mode */
+  html:not(.dark) body {
+    @apply bg-gray-50 text-gray-900 font-sans;
+  }
+
+  html:not(.dark) .card {
+    @apply bg-white border-gray-200 text-gray-900;
+    box-shadow: 0 1px 3px rgba(0,0,0,0.06);
+  }
+
+  html:not(.dark) .input-field {
+    @apply bg-white border-gray-300 text-gray-900 placeholder-gray-400;
+  }
+
+  html:not(.dark) .select-field {
+    @apply bg-white border-gray-300 text-gray-900;
+  }
+
+  html:not(.dark) .bg-dark-900,
+  html:not(.dark) .bg-dark-800,
+  html:not(.dark) .bg-dark-950 {
+    background-color: #ffffff;
+  }
+
+  html:not(.dark) .border-dark-700,
+  html:not(.dark) .border-dark-600 {
+    border-color: #e5e7eb;
+  }
+
+  html:not(.dark) .text-white {
+    color: #111827;
+  }
+
+  html:not(.dark) .text-gray-400 {
+    color: #4b5563;
+  }
+
+  html:not(.dark) .text-gray-300 {
+    color: #374151;
+  }
+
+  html:not(.dark) .text-gray-500 {
+    color: #6b7280;
+  }
+
+  html:not(.dark) .bg-dark-900\/70 {
+    background-color: #f9fafb;
+  }
+
+  html:not(.dark) .bg-dark-800\/80 {
+    background-color: #ffffff;
+  }
+
+  html:not(.dark) .border-dark-700\/50 {
+    border-color: #e5e7eb;
+  }
+
+  html:not(.dark) .bg-dark-800\/40 {
+    background-color: #f3f4f6;
+  }
+
+  /* Neutralize dark gradient backgrounds in light mode */
+  html:not(.dark) [class*="from-dark-"],
+  html:not(.dark) [class*="to-dark-"],
+  html:not(.dark) [class*="via-dark-"] {
+    --tw-gradient-from: #ffffff var(--tw-gradient-from-position);
+    --tw-gradient-to: #f9fafb var(--tw-gradient-to-position);
+    --tw-gradient-via: #ffffff var(--tw-gradient-via-position);
+    --tw-gradient-stops: var(--tw-gradient-from), var(--tw-gradient-to);
+  }
+
+  /* Ensure gradient cards in light mode keep readable borders */
+  html:not(.dark) .border-dark-600\/50 {
+    border-color: #e5e7eb;
+  }
+
+  /* Fix light text colors used inside gradient cards */
+  html:not(.dark) .text-gray-200 {
+    color: #374151;
+  }
+
+  html:not(.dark) .text-gray-600 {
+    color: #6b7280;
+  }
+
+  /* Custom scrollbar */
+  ::-webkit-scrollbar {
+    width: 6px;
+    height: 6px;
+  }
+
+  ::-webkit-scrollbar-track {
+    @apply bg-dark-900;
+  }
+
+  ::-webkit-scrollbar-thumb {
+    @apply bg-dark-600 rounded-full;
+  }
+
+  ::-webkit-scrollbar-thumb:hover {
+    @apply bg-dark-500;
+  }
+}
+
+@layer components {
+  .btn-primary {
+    @apply px-4 py-2 bg-primary-500 text-white font-medium rounded-lg 
+           hover:bg-primary-600 transition-colors duration-200 
+           focus:outline-none focus:ring-2 focus:ring-primary-500 focus:ring-offset-2 focus:ring-offset-dark-900
+           disabled:opacity-50 disabled:cursor-not-allowed;
+  }
+
+  .btn-secondary {
+    @apply px-4 py-2 bg-dark-700 text-gray-200 font-medium rounded-lg 
+           border border-dark-600 hover:bg-dark-600 transition-colors duration-200
+           focus:outline-none focus:ring-2 focus:ring-dark-500 focus:ring-offset-2 focus:ring-offset-dark-900;
+  }
+
+  .btn-danger {
+    @apply px-4 py-2 bg-red-600 text-white font-medium rounded-lg 
+           hover:bg-red-700 transition-colors duration-200
+           focus:outline-none focus:ring-2 focus:ring-red-500 focus:ring-offset-2 focus:ring-offset-dark-900;
+  }
+
+  .btn-success {
+    @apply px-4 py-2 bg-green-600 text-white font-medium rounded-lg 
+           hover:bg-green-700 transition-colors duration-200
+           focus:outline-none focus:ring-2 focus:ring-green-500 focus:ring-offset-2 focus:ring-offset-dark-900;
+  }
+
+  .card {
+    @apply bg-dark-800 border border-dark-700/50 rounded-xl p-6 shadow-lg;
+  }
+
+  .input-field {
+    @apply w-full px-4 py-3 bg-dark-900 border border-dark-600 rounded-lg 
+           text-gray-100 placeholder-gray-500
+           focus:outline-none focus:ring-2 focus:ring-primary-500 focus:border-primary-500
+           transition-colors duration-200;
+  }
+
+  .select-field {
+    @apply w-full px-4 py-3 bg-dark-900 border border-dark-600 rounded-lg 
+           text-gray-100 appearance-none cursor-pointer
+           focus:outline-none focus:ring-2 focus:ring-primary-500 focus:border-primary-500;
+  }
+
+  .tab-active {
+    @apply text-primary-400 border-b-2 border-primary-400;
+  }
+
+  .tab-inactive {
+    @apply text-gray-400 hover:text-gray-200 border-b-2 border-transparent;
+  }
+
+  .badge {
+    @apply inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium;
+  }
+
+  .badge-critical {
+    @apply badge bg-red-500/20 text-red-400;
+  }
+
+  .badge-high {
+    @apply badge bg-orange-500/20 text-orange-400;
+  }
+
+  .badge-medium {
+    @apply badge bg-yellow-500/20 text-yellow-400;
+  }
+
+  .badge-low {
+    @apply badge bg-green-500/20 text-green-400;
+  }
+
+  .badge-info {
+    @apply badge bg-blue-500/20 text-blue-400;
+  }
+
+  /* Animation classes */
+  .animate-fade-in {
+    animation: fadeIn 0.3s ease-in-out;
+  }
+
+  .animate-slide-up {
+    animation: slideUp 0.3s ease-out;
+  }
+
+  .pulse-dot {
+    @apply relative;
+  }
+
+  .pulse-dot::before {
+    content: '';
+    @apply absolute -top-1 -right-1 w-3 h-3 bg-green-500 rounded-full;
+    animation: pulse 2s infinite;
+  }
+}
+
+@keyframes fadeIn {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+@keyframes slideUp {
+  from { transform: translateY(10px); opacity: 0; }
+  to { transform: translateY(0); opacity: 1; }
+}
+
+@keyframes pulse {
+  0%, 100% { opacity: 1; transform: scale(1); }
+  50% { opacity: 0.5; transform: scale(1.5); }
+}

@@ -1,0 +1,45 @@
+{
+  "name": "archlens-dashboard",
+  "private": true,
+  "version": "1.0.0",
+  "description": "ArchLens - AI-Powered AWS Architecture Visualization & Optimization Platform",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview",
+    "lint": "eslint . --ext .ts,.tsx"
+  },
+  "dependencies": {
+    "@aws-amplify/ui-react": "^6.1.0",
+    "@heroicons/react": "^2.1.1",
+    "@reactflow/core": "^11.11.0",
+    "aws-amplify": "^6.3.0",
+    "aws-icons": "latest",
+    "d3": "^7.9.0",
+    "elkjs": "^0.12.0",
+    "file-saver": "^2.0.5",
+    "html-to-image": "^1.11.11",
+    "jspdf": "^2.5.1",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
+    "react-hot-toast": "^2.4.1",
+    "react-router-dom": "^6.23.0",
+    "reactflow": "^11.11.0",
+    "recharts": "^2.12.0",
+    "zustand": "^4.5.0"
+  },
+  "devDependencies": {
+    "@types/d3": "^7.4.3",
+    "@types/file-saver": "^2.0.7",
+    "@types/react": "^18.3.1",
+    "@types/react-dom": "^18.3.0",
+    "@vitejs/plugin-react": "^4.2.1",
+    "autoprefixer": "^10.4.19",
+    "eslint": "^9.2.0",
+    "postcss": "^8.4.38",
+    "tailwindcss": "^3.4.3",
+    "typescript": "^5.4.5",
+    "vite": "^5.2.11"
+  }
+}
