@@ -1,5 +1,6 @@
 # ─── Secrets / Environment ───────────────────────────────
-.env
+# NOTE: frontend/.env is intentionally committed (private repo, no hard secrets —
+# only Cognito IDs / API URL / region which are already public in the browser).
 .env.local
 .env.*.local
 *.pem
