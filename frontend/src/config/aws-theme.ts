@@ -86,6 +86,22 @@ export const AWS_SERVICE_COLORS: Record<string, string> = {
 
   // Developer Tools (Nebula)
   CodeBuild: AWS_COLOR_NEBULA,
+
+  // SOW Appendix A additional services
+  Neptune: AWS_COLOR_NEBULA,        // Database
+  DocumentDB: AWS_COLOR_NEBULA,     // Database
+  OpenSearch: AWS_COLOR_GALAXY,     // Analytics
+  EMR: AWS_COLOR_GALAXY,            // Analytics
+  GuardDuty: AWS_COLOR_MARS,        // Security
+  WAF: AWS_COLOR_MARS,              // Security
+  SecurityHub: AWS_COLOR_MARS,      // Security
+  Config: AWS_COLOR_COSMOS,         // Management & Governance
+  SystemsManager: AWS_COLOR_COSMOS, // Management & Governance
+  TransitGateway: AWS_COLOR_GALAXY, // Networking
+  FSx: AWS_COLOR_ENDOR,             // Storage
+  Batch: AWS_COLOR_SMILE,           // Compute
+  AppRunner: AWS_COLOR_SMILE,       // Compute
+  AppSync: AWS_COLOR_COSMOS,        // Application Integration
 };
 
 

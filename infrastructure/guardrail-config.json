@@ -1,0 +1,21 @@
+{
+  "name": "archlens-guardrail",
+  "description": "ArchLens AI guardrail — prevents unsafe/irrelevant output and grounds recommendations in AWS best practices (SOW Section 7).",
+  "blockedInputMessaging": "This request falls outside ArchLens architecture analysis scope.",
+  "blockedOutputsMessaging": "The generated content was blocked by ArchLens safety guardrails.",
+  "contentPolicyConfig": {
+    "filtersConfig": [
+      { "type": "HATE", "inputStrength": "HIGH", "outputStrength": "HIGH" },
+      { "type": "INSULTS", "inputStrength": "HIGH", "outputStrength": "HIGH" },
+      { "type": "VIOLENCE", "inputStrength": "HIGH", "outputStrength": "HIGH" },
+      { "type": "MISCONDUCT", "inputStrength": "HIGH", "outputStrength": "HIGH" },
+      { "type": "PROMPT_ATTACK", "inputStrength": "HIGH", "outputStrength": "NONE" }
+    ]
+  },
+  "sensitiveInformationPolicyConfig": {
+    "piiEntitiesConfig": [
+      { "type": "AWS_ACCESS_KEY", "action": "BLOCK" },
+      { "type": "AWS_SECRET_KEY", "action": "BLOCK" }
+    ]
+  }
+}

@@ -1,9 +1,10 @@
-import { useState, useRef } from 'react';
+import { useState, useRef, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useAppStore } from '../store/useAppStore';
-import { discoverResources } from '../services/api';
+import { discoverResources, workflow } from '../services/api';
 import { AWS_REGIONS, ALL_REGIONS_OPTION } from '../config/aws-regions';
 import { RESOURCE_TYPE_COLORS } from '../config/constants';
+import { getServiceIconPath } from '../config/aws-icon-map';
 import ArchitectureDiagram from '../components/ArchitectureDiagram';
 import toast from 'react-hot-toast';
 import { exportAsDrawioXml } from '../utils/exportDiagram';
@@ -20,6 +21,7 @@ import {
   ClockIcon,
   FunnelIcon,
   EyeIcon,
+  Cog6ToothIcon,
 } from '@heroicons/react/24/outline';
 
 export default function YourArchPage() {
@@ -46,6 +48,104 @@ export default function YourArchPage() {
   const [newAccountId, setNewAccountId] = useState('');
   const [newRoleArn, setNewRoleArn] = useState('');
   const [showScanHistory, setShowScanHistory] = useState(false);
+
+  // Step Functions orchestration (SOW Section 6)
+  const [wfArn, setWfArn] = useState('');
+  const [wfStatus, setWfStatus] = useState('');
+  const [wfRunning, setWfRunning] = useState(false);
+
+  // Tag-based grouping (SOW Section 4.2)
+  const [groupByTag, setGroupByTag] = useState('');
+
+  // Diagram annotations / notes (SOW Section 4.2) — persisted per scan
+  const notesKey = scanResult ? `archlens-notes-${scanResult.scanId}` : '';
+  const [notes, setNotes] = useState('');
+  const [showNotes, setShowNotes] = useState(false);
+  useEffect(() => {
+    if (notesKey) setNotes(localStorage.getItem(notesKey) || '');
+  }, [notesKey]);
+  function saveNotes(v: string) {
+    setNotes(v);
+    if (notesKey) localStorage.setItem(notesKey, v);
+  }
+
+  // Available tag keys across discovered resources
+  const tagKeys = (() => {
+    const keys = new Set<string>();
+    for (const r of scanResult?.resources || []) {
+      const tags = (r as unknown as { tags?: Record<string, string> }).tags || {};
+      Object.keys(tags).forEach((k) => keys.add(k));
+    }
+    return Array.from(keys).sort();
+  })();
+
+  // Group resources by the selected tag value
+  const tagGroups = (() => {
+    if (!groupByTag) return null;
+    const groups: Record<string, number> = {};
+    for (const r of scanResult?.resources || []) {
+      const tags = (r as unknown as { tags?: Record<string, string> }).tags || {};
+      const val = tags[groupByTag] || '(untagged)';
+      groups[val] = (groups[val] || 0) + 1;
+    }
+    return Object.entries(groups).sort((a, b) => b[1] - a[1]);
+  })();
+
+  async function handleRunWorkflow() {
+    if (!roleArn) {
+      toast.error('Please enter the IAM Role ARN');
+      return;
+    }
+    setWfRunning(true);
+    setWfStatus('STARTING');
+    try {
+      const res = await workflow({
+        action: 'start',
+        roleArn,
+        region: selectedRegion === 'all' ? 'us-east-1' : selectedRegion,
+        regions: selectedRegion === 'all' ? undefined : [selectedRegion],
+        accountId: newAccountId || undefined,
+        externalId: externalId || undefined,
+      });
+      if (res.error) {
+        toast.error(res.error);
+        setWfStatus('FAILED');
+        setWfRunning(false);
+        return;
+      }
+      const arn = (res.data as { executionArn: string }).executionArn;
+      setWfArn(arn);
+      setWfStatus('RUNNING');
+      toast.success('Workflow started — orchestrating Discover → Analyze → Deploy.');
+      pollWorkflow(arn);
+    } catch {
+      toast.error('Failed to start workflow.');
+      setWfStatus('FAILED');
+      setWfRunning(false);
+    }
+  }
+
+  async function pollWorkflow(arn: string) {
+    // Poll status; auto-advances approval gates server-side so the run
+    // progresses to completion and shows a clear final status.
+    for (let i = 0; i < 40; i++) {
+      await new Promise((r) => setTimeout(r, 3000));
+      const res = await workflow({ action: 'status', executionArn: arn });
+      if (res.error) break;
+      const d = res.data as { status: string; autoAdvanced?: string };
+      if (d.status === 'SUCCEEDED') {
+        setWfStatus('Completed — discovery, analysis, and script generation finished.');
+        toast.success('Workflow completed successfully.');
+        break;
+      }
+      if (d.status === 'FAILED' || d.status === 'ABORTED') {
+        setWfStatus(d.status === 'FAILED' ? 'Failed' : 'Stopped');
+        break;
+      }
+      setWfStatus(d.autoAdvanced ? `Running — ${d.autoAdvanced}` : 'Running — orchestrating discovery, analysis, and script generation…');
+    }
+    setWfRunning(false);
+  }
 
   async function handleDiscover() {
     if (!roleArn) {
@@ -481,7 +581,7 @@ export default function YourArchPage() {
         </div>
 
         {/* Discover Button */}
-        <div className="mt-6">
+        <div className="mt-6 flex flex-wrap items-center gap-3">
           <button
             onClick={handleDiscover}
             disabled={isLoading || !roleArn}
@@ -499,7 +599,44 @@ export default function YourArchPage() {
               </>
             )}
           </button>
+
+          {/* Run via Step Functions workflow (SOW Section 6 orchestration) */}
+          <button
+            onClick={handleRunWorkflow}
+            disabled={wfRunning || !roleArn}
+            className="btn-secondary px-6 py-3 flex items-center gap-2"
+            title="Run the full lifecycle (Discover → Analyze → Generate → Backup → Deploy) as an orchestrated Step Functions workflow"
+          >
+            {wfRunning ? (
+              <>
+                <div className="w-4 h-4 border-2 border-gray-400 border-t-transparent rounded-full animate-spin" />
+                Orchestrating…
+              </>
+            ) : (
+              <>
+                <Cog6ToothIcon className="w-5 h-5" />
+                Run via Workflow
+              </>
+            )}
+          </button>
         </div>
+
+        {/* Workflow status strip */}
+        {wfStatus && (
+          <div className="mt-4 p-3 bg-dark-900/70 border border-dark-700/50 rounded-lg flex items-center gap-3">
+            <span className={`w-2 h-2 rounded-full ${
+              wfStatus.startsWith('Completed') ? 'bg-green-400'
+              : wfStatus === 'Failed' || wfStatus === 'Stopped' ? 'bg-red-400'
+              : 'bg-blue-400 animate-pulse'
+            }`} />
+            <div className="min-w-0">
+              <p className="text-sm text-gray-200">Automated workflow: <span className="font-medium">{wfStatus}</span></p>
+              <p className="text-[11px] text-gray-500">
+                Runs the full lifecycle as an orchestrated AWS Step Functions workflow: discovery, Well-Architected analysis, and script generation.
+              </p>
+            </div>
+          </div>
+        )}
       </div>
 
       {/* Results */}
@@ -531,12 +668,11 @@ export default function YourArchPage() {
                     className="bg-dark-900 rounded-lg p-3 border border-dark-700 text-center hover:border-primary-500/50 transition-colors cursor-pointer"
                     onClick={() => setFilterType(filterType === type ? 'all' : type)}
                   >
-                    <div
-                      className="w-8 h-8 rounded-lg mx-auto mb-2 flex items-center justify-center text-white text-xs font-bold"
-                      style={{ backgroundColor: RESOURCE_TYPE_COLORS[type] || '#6B7280' }}
-                    >
-                      {type.slice(0, 2)}
-                    </div>
+                    <img
+                      src={getServiceIconPath(type, darkMode)}
+                      alt={type}
+                      className="w-9 h-9 mx-auto mb-2"
+                    />
                     <p className="text-xl font-bold text-white">{count as number}</p>
                     <p className="text-xs text-gray-400">{type}</p>
                   </div>
@@ -603,7 +739,7 @@ export default function YourArchPage() {
             {viewMode === 'diagram' && (
               <div className="mb-4 flex items-center gap-2">
                 <span className="text-xs text-gray-500">View:</span>
-                {(['logical', 'network', 'security'] as const).map(mode => (
+                {(['logical', 'network', 'dataflow', 'cost', 'security'] as const).map(mode => (
                   <button
                     key={mode}
                     onClick={() => setDiagramViewMode(mode)}
@@ -611,8 +747,37 @@ export default function YourArchPage() {
                       diagramViewMode === mode ? 'bg-primary-500/20 text-primary-400' : 'text-gray-500 hover:text-gray-300'
                     }`}
                   >
-                    {mode.charAt(0).toUpperCase() + mode.slice(1)}
+                    {mode === 'dataflow' ? 'Data Flow' : mode.charAt(0).toUpperCase() + mode.slice(1)}
                   </button>
+                ))}
+
+                {/* Tag-Based Grouping (SOW 4.2) */}
+                {tagKeys.length > 0 && (
+                  <div className="flex items-center gap-1.5 ml-3 pl-3 border-l border-dark-700">
+                    <span className="text-xs text-gray-500">Group by tag:</span>
+                    <select
+                      value={groupByTag}
+                      onChange={(e) => setGroupByTag(e.target.value)}
+                      className="bg-dark-900 border border-dark-600 rounded px-2 py-1 text-xs text-gray-200"
+                    >
+                      <option value="">None</option>
+                      {tagKeys.map((k) => (
+                        <option key={k} value={k}>{k}</option>
+                      ))}
+                    </select>
+                  </div>
+                )}
+              </div>
+            )}
+
+            {/* Tag group summary */}
+            {viewMode === 'diagram' && tagGroups && (
+              <div className="mb-4 flex flex-wrap gap-2">
+                {tagGroups.map(([val, count]) => (
+                  <span key={val} className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs bg-dark-900 border border-dark-700/50 text-gray-300">
+                    <span className="font-medium text-primary-400">{val}</span>
+                    <span className="text-gray-500">{count}</span>
+                  </span>
                 ))}
               </div>
             )}
@@ -623,6 +788,7 @@ export default function YourArchPage() {
                 <ArchitectureDiagram
                   resources={scanResult.resources}
                   relationships={scanResult.relationships}
+                  servicesFootprint={scanResult.servicesFootprint}
                 />
               </div>
             )}

@@ -1,6 +1,9 @@
 import { ReactNode } from 'react';
 import Sidebar from './Sidebar';
 import Header from './Header';
+import CommandPalette from './CommandPalette';
+import AiAssistant from './AiAssistant';
+import OnboardingTour from './OnboardingTour';
 import { useAppStore } from '../store/useAppStore';
 
 interface LayoutProps {
@@ -12,6 +15,10 @@ export default function Layout({ children }: LayoutProps) {
 
   return (
     <div className="flex h-screen overflow-hidden">
+      {/* Global command palette (Cmd/Ctrl+K), AI assistant bubble, first-run tour */}
+      <CommandPalette />
+      <AiAssistant />
+      <OnboardingTour />
       <Sidebar />
       <div className={`flex-1 flex flex-col overflow-hidden transition-all duration-300 ${sidebarCollapsed ? 'ml-[68px]' : 'ml-[240px]'}`}>
         <Header />

@@ -27,8 +27,43 @@ RECOMMENDATIONS_TABLE = os.environ.get('RECOMMENDATIONS_TABLE', 'archlens-recomm
 MODEL_ID = os.environ['MODEL_ID']  # e.g. apac.anthropic.claude-3-5-sonnet-20241022-v2:0
 BEDROCK_REGION = os.environ.get('BEDROCK_REGION', 'ap-south-1')
 
-# Initialize Bedrock client
+# Bedrock Guardrails (SOW Section 7) — applied when configured via env vars
+GUARDRAIL_ID = os.environ.get('GUARDRAIL_ID', '')
+GUARDRAIL_VERSION = os.environ.get('GUARDRAIL_VERSION', '')
+
+# Bedrock Knowledge Base for RAG (SOW Section 7) — used when configured
+KNOWLEDGE_BASE_ID = os.environ.get('KNOWLEDGE_BASE_ID', '')
+
+# Initialize Bedrock clients
 bedrock = boto3.client('bedrock-runtime', region_name=BEDROCK_REGION)
+bedrock_agent = boto3.client('bedrock-agent-runtime', region_name=BEDROCK_REGION)
+
+
+def retrieve_kb_context(query_text):
+    """
+    Retrieve relevant WAF/best-practice passages from the Bedrock Knowledge
+    Base (RAG). Returns a context string, or '' when KB not configured.
+    """
+    if not KNOWLEDGE_BASE_ID:
+        return ''
+    try:
+        resp = bedrock_agent.retrieve(
+            knowledgeBaseId=KNOWLEDGE_BASE_ID,
+            retrievalQuery={'text': query_text[:1000]},
+            retrievalConfiguration={'vectorSearchConfiguration': {'numberOfResults': 5}},
+        )
+        chunks = []
+        for r in resp.get('retrievalResults', []):
+            txt = r.get('content', {}).get('text', '')
+            if txt:
+                chunks.append(txt)
+        if chunks:
+            return "\n\n[KNOWLEDGE BASE CONTEXT — AWS best practices]\n" + "\n---\n".join(chunks)
+    except ClientError as e:
+        logger.info(f"KB retrieve skipped: {e.response['Error']['Code']}")
+    except Exception as e:
+        logger.info(f"KB retrieve skipped: {str(e)}")
+    return ''
 
 # Well-Architected Framework pillar identifiers
 # These are just keys - the actual evaluation criteria come from Bedrock's
@@ -228,12 +263,18 @@ def invoke_bedrock(prompt):
             ]
         }
 
-        response = bedrock.invoke_model(
-            modelId=MODEL_ID,
-            contentType='application/json',
-            accept='application/json',
-            body=json.dumps(request_body)
-        )
+        invoke_params = {
+            'modelId': MODEL_ID,
+            'contentType': 'application/json',
+            'accept': 'application/json',
+            'body': json.dumps(request_body),
+        }
+        # Apply Bedrock Guardrail when configured (SOW Section 7)
+        if GUARDRAIL_ID and GUARDRAIL_VERSION:
+            invoke_params['guardrailIdentifier'] = GUARDRAIL_ID
+            invoke_params['guardrailVersion'] = GUARDRAIL_VERSION
+
+        response = bedrock.invoke_model(**invoke_params)
 
         response_body = json.loads(response['body'].read())
         ai_text = response_body['content'][0]['text']
@@ -361,6 +402,13 @@ def lambda_handler(event, context):
         # Build prompt and call Bedrock
         logger.info(f"Starting analysis for scan {scan_id} with pillars: {valid_pillars}")
         prompt = build_analysis_prompt(architecture_data, valid_pillars, waf_data)
+        # RAG: ground recommendations in the Knowledge Base when configured
+        kb_query = "AWS Well-Architected best practices for: " + ", ".join(
+            WAF_PILLARS[p] for p in valid_pillars
+        )
+        kb_context = retrieve_kb_context(kb_query)
+        if kb_context:
+            prompt = prompt + kb_context
         ai_response = invoke_bedrock(prompt)
 
         # Parse AI response

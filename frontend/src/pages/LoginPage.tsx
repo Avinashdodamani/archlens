@@ -2,7 +2,11 @@ import { useState } from 'react';
 import { signIn, signUp, confirmSignUp, fetchUserAttributes } from 'aws-amplify/auth';
 import { useAppStore } from '../store/useAppStore';
 import toast from 'react-hot-toast';
-import { ShieldCheckIcon, EyeIcon, EyeSlashIcon } from '@heroicons/react/24/outline';
+import {
+  ShieldCheckIcon, EyeIcon, EyeSlashIcon,
+  CubeTransparentIcon, SparklesIcon, BoltIcon, LockClosedIcon, ChartBarIcon,
+} from '@heroicons/react/24/outline';
+import type { ComponentType, SVGProps } from 'react';
 
 type AuthMode = 'login' | 'signup' | 'confirm';
 
@@ -84,36 +88,38 @@ export default function LoginPage() {
       {/* Left Side — Feature Points */}
       <div className="relative z-10 w-full lg:w-1/2 flex items-center justify-center p-8 lg:p-12">
         <div className="max-w-md">
-          <h2 className="text-2xl font-bold text-white mb-2">Cloud Intelligence,<br />Simplified.</h2>
-          <p className="text-gray-400 text-sm mb-10 leading-relaxed">
-            See your architecture. Optimize it with AI. Deploy safely in one click.
+          <h2 className="text-4xl lg:text-5xl font-bold text-white mb-4 tracking-tight leading-[1.1]">
+            Cloud intelligence,<br />simplified.
+          </h2>
+          <p className="text-gray-400 text-base mb-12 leading-relaxed">
+            See your architecture, optimize it with AI, and deploy changes safely in one click.
           </p>
 
-          <div className="space-y-5">
+          <div className="space-y-6">
             <FeatureItem
-              icon="🏗️"
-              title="Architecture Discovery"
-              description="Discover and visualize your complete AWS architecture with a single scan"
+              Icon={CubeTransparentIcon}
+              title="Architecture discovery"
+              description="Discover and visualize your complete AWS architecture with a single scan."
             />
             <FeatureItem
-              icon="🤖"
-              title="AI-Powered Analysis"
-              description="Analyze your architecture against all 6 AWS Well-Architected Framework pillars"
+              Icon={SparklesIcon}
+              title="AI-powered analysis"
+              description="Evaluate your architecture against all six AWS Well-Architected Framework pillars."
             />
             <FeatureItem
-              icon="⚡"
-              title="One-Click Remediation"
-              description="Auto-generate CloudFormation & Terraform scripts and deploy changes safely"
+              Icon={BoltIcon}
+              title="One-click remediation"
+              description="Auto-generate CloudFormation and Terraform scripts, then deploy changes safely."
             />
             <FeatureItem
-              icon="🔒"
-              title="Secure & Reliable"
-              description="Automatic backups before every change with instant rollback capability"
+              Icon={LockClosedIcon}
+              title="Secure and reliable"
+              description="Automatic backups before every change, with instant rollback on failure."
             />
             <FeatureItem
-              icon="📊"
-              title="Continuous Insights"
-              description="Track scan history, architecture health scores, and cost savings over time"
+              Icon={ChartBarIcon}
+              title="Continuous insights"
+              description="Track scan history, architecture health scores, and cost savings over time."
             />
           </div>
         </div>
@@ -312,15 +318,23 @@ export default function LoginPage() {
   );
 }
 
-function FeatureItem({ icon, title, description }: { icon: string; title: string; description: string }) {
+function FeatureItem({
+  Icon,
+  title,
+  description,
+}: {
+  Icon: ComponentType<SVGProps<SVGSVGElement>>;
+  title: string;
+  description: string;
+}) {
   return (
     <div className="flex items-start gap-4">
-      <div className="w-10 h-10 bg-dark-800/60 border border-dark-700/40 rounded-xl flex items-center justify-center flex-shrink-0">
-        <span className="text-lg">{icon}</span>
+      <div className="w-11 h-11 bg-primary-500/10 border border-primary-500/20 rounded-xl flex items-center justify-center flex-shrink-0">
+        <Icon className="w-5 h-5 text-primary-400" />
       </div>
       <div>
-        <p className="text-sm font-semibold text-white">{title}</p>
-        <p className="text-xs text-gray-400 mt-0.5 leading-relaxed">{description}</p>
+        <p className="text-base font-semibold text-white">{title}</p>
+        <p className="text-sm text-gray-400 mt-1 leading-relaxed">{description}</p>
       </div>
     </div>
   );

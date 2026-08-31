@@ -30,6 +30,8 @@ interface ScanResult {
   timestamp: string;
   resources: Resource[];
   relationships: Relationship[];
+  costTrend?: { month: string; cost_usd: number }[];
+  servicesFootprint?: { service: string; monthly_cost_usd: number }[];
   summary: {
     total_resources: number;
     total_relationships: number;

@@ -1,8 +1,10 @@
 import { useState } from 'react';
 import { useAppStore } from '../store/useAppStore';
 import { analyzeArchitecture, generateCFT, generateTerraform } from '../services/api';
-import { WAF_PILLARS, PRIORITY_CONFIG } from '../config/constants';
+import { WAF_PILLARS } from '../config/constants';
+import { scoreTextClass, PRIORITY_BADGE } from '../config/theme';
 import toast from 'react-hot-toast';
+import ArchitectureDiagram from '../components/ArchitectureDiagram';
 import {
   SparklesIcon,
   ArrowDownTrayIcon,
@@ -11,6 +13,7 @@ import {
   CheckCircleIcon,
   ClipboardDocumentIcon,
   ShieldCheckIcon,
+  ArrowsRightLeftIcon,
 } from '@heroicons/react/24/outline';
 
 export default function RedefineArchPage() {
@@ -196,10 +199,7 @@ export default function RedefineArchPage() {
               <h2 className="text-lg font-semibold text-white">Analysis Summary</h2>
               <div className="flex items-center gap-2">
                 <span className="text-sm text-gray-400">Overall Score:</span>
-                <span className={`text-2xl font-bold ${
-                  (analysisResult.analysis.overall_score || 0) >= 70 ? 'text-green-400' :
-                  (analysisResult.analysis.overall_score || 0) >= 40 ? 'text-yellow-400' : 'text-red-400'
-                }`}>
+                <span className={`text-2xl font-medium ${scoreTextClass(analysisResult.analysis.overall_score || 0)}`}>
                   {analysisResult.analysis.overall_score || 0}/100
                 </span>
               </div>
@@ -240,6 +240,60 @@ export default function RedefineArchPage() {
             )}
           </div>
 
+          {/* Architecture Comparison — current vs proposed (SOW 4.3) */}
+          {scanResult && (
+            <div className="card">
+              <h2 className="text-lg font-semibold text-white flex items-center gap-2 mb-4">
+                <ArrowsRightLeftIcon className="w-5 h-5 text-primary-400" />
+                Architecture Comparison
+              </h2>
+              <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+                {/* Current */}
+                <div>
+                  <div className="flex items-center gap-2 mb-2">
+                    <span className="w-2 h-2 rounded-full bg-gray-400" />
+                    <span className="text-sm font-medium text-gray-300">Current Architecture</span>
+                  </div>
+                  <div className="h-[420px] rounded-xl overflow-hidden border border-dark-700/50">
+                    <ArchitectureDiagram
+                      resources={scanResult.resources}
+                      relationships={scanResult.relationships}
+                      servicesFootprint={scanResult.servicesFootprint}
+                    />
+                  </div>
+                </div>
+                {/* Proposed changes */}
+                <div>
+                  <div className="flex items-center gap-2 mb-2">
+                    <span className="w-2 h-2 rounded-full bg-purple-400" />
+                    <span className="text-sm font-medium text-gray-300">Proposed Changes</span>
+                  </div>
+                  <div className="h-[420px] rounded-xl border border-purple-500/20 bg-dark-900/50 p-4 overflow-y-auto space-y-2">
+                    {(analysisResult.analysis.recommendations || []).map((rec) => (
+                      <div key={rec.id} className="bg-dark-900/70 border border-dark-700/50 rounded-lg p-3">
+                        <div className="flex items-center gap-2 mb-1">
+                          <span className={`badge ${(PRIORITY_BADGE[rec.priority] || PRIORITY_BADGE.MEDIUM).bg} ${(PRIORITY_BADGE[rec.priority] || PRIORITY_BADGE.MEDIUM).text}`}>
+                            {rec.priority}
+                          </span>
+                          <span className="text-xs text-gray-500">{rec.pillar}</span>
+                        </div>
+                        <p className="text-sm text-white">{rec.title}</p>
+                        <div className="flex items-center gap-2 mt-2 text-xs">
+                          <span className="text-gray-400 line-through truncate max-w-[45%]">{rec.current_state}</span>
+                          <ArrowsRightLeftIcon className="w-3 h-3 text-purple-400 flex-shrink-0" />
+                          <span className="text-green-300 truncate max-w-[45%]">{rec.proposed_state}</span>
+                        </div>
+                      </div>
+                    ))}
+                    {(analysisResult.analysis.recommendations || []).length === 0 && (
+                      <p className="text-sm text-gray-500 text-center pt-16">No proposed changes.</p>
+                    )}
+                  </div>
+                </div>
+              </div>
+            </div>
+          )}
+
           {/* Recommendations */}
           <div className="card">
             <h2 className="text-lg font-semibold text-white mb-4">
@@ -247,7 +301,7 @@ export default function RedefineArchPage() {
             </h2>
             <div className="space-y-3">
               {analysisResult.analysis.recommendations?.map((rec) => {
-                const priorityConfig = PRIORITY_CONFIG[rec.priority] || PRIORITY_CONFIG.MEDIUM;
+                const priorityConfig = PRIORITY_BADGE[rec.priority] || PRIORITY_BADGE.MEDIUM;
                 const isExpanded = expandedRec === rec.id;
                 return (
                   <div
@@ -260,7 +314,7 @@ export default function RedefineArchPage() {
                     >
                       <div className="flex-1">
                         <div className="flex items-center gap-2 mb-1">
-                          <span className={`badge ${priorityConfig.bg} ${priorityConfig.color}`}>
+                          <span className={`badge ${priorityConfig.bg} ${priorityConfig.text}`}>
                             {rec.priority}
                           </span>
                           <span className="text-xs text-gray-500">{rec.pillar}</span>

@@ -9,9 +9,13 @@ import {
   ArrowPathIcon,
   PlayIcon,
   XCircleIcon,
+  SparklesIcon,
+  DocumentMagnifyingGlassIcon,
 } from '@heroicons/react/24/outline';
+import { useNavigate } from 'react-router-dom';
 
 export default function AutoRemediatePage() {
+  const navigate = useNavigate();
   const {
     scanResult, analysisResult, backupResult, setBackupResult,
     roleArn, currentStep, setCurrentStep, isLoading, setLoading,
@@ -19,6 +23,17 @@ export default function AutoRemediatePage() {
 
   const [writeRoleArn, setWriteRoleArn] = useState('');
   const [deployProgress, setDeployProgress] = useState(0);
+
+  // Change Set preview derived from the approved recommendations (SOW 4.4)
+  const changeSet = (analysisResult?.analysis?.recommendations || []).map((r) => ({
+    action: (r.current_state || '').toLowerCase().includes('none') || (r.affected_resources?.length || 0) === 0
+      ? 'Create' : 'Modify',
+    title: r.title,
+    pillar: r.pillar,
+    affected: (r.affected_resources || []).slice(0, 3).join(', ') +
+      ((r.affected_resources?.length || 0) > 3 ? ` +${(r.affected_resources!.length - 3)} more` : ''),
+    downtime: r.downtime_required,
+  }));
 
   async function handleTakeBackup() {
     if (!writeRoleArn) {
@@ -125,8 +140,17 @@ export default function AutoRemediatePage() {
           <div className="w-16 h-16 bg-gradient-to-br from-orange-500/20 to-orange-600/10 rounded-2xl flex items-center justify-center mx-auto mb-5 border border-orange-500/20">
             <ShieldCheckIcon className="w-8 h-8 text-orange-400" />
           </div>
-          <h2 className="text-lg font-semibold text-white mb-2">No Recommendations to Apply</h2>
-          <p className="text-gray-400 text-sm max-w-md mx-auto">Complete an analysis from the RedefineYourArch tab first to generate optimization recommendations.</p>
+          <h2 className="text-lg font-semibold text-white mb-2">No recommendations to apply yet</h2>
+          <p className="text-gray-400 text-sm max-w-md mx-auto mb-6">
+            Run an AI analysis first — we'll generate optimization recommendations you can safely deploy with automatic backup and rollback.
+          </p>
+          <button
+            onClick={() => navigate('/redefine')}
+            className="btn-primary inline-flex items-center gap-2 px-6 py-2.5 shadow-lg shadow-primary-500/20"
+          >
+            <SparklesIcon className="w-5 h-5" />
+            Go to RedefineYourArch
+          </button>
         </div>
       </div>
     );
@@ -277,6 +301,56 @@ export default function AutoRemediatePage() {
               </button>
             </div>
           )}
+        </div>
+      )}
+
+      {/* Change Set Preview (SOW 4.4) — shown before deploy */}
+      {backupResult && currentStep === 'backup_complete' && changeSet.length > 0 && (
+        <div className="card">
+          <div className="flex items-center justify-between mb-4">
+            <h2 className="text-lg font-semibold text-white flex items-center gap-2">
+              <DocumentMagnifyingGlassIcon className="w-5 h-5 text-primary-400" />
+              Change Set Preview
+            </h2>
+            <span className="text-xs text-gray-500 bg-dark-900 px-2.5 py-1 rounded-full">
+              {changeSet.length} planned change{changeSet.length === 1 ? '' : 's'}
+            </span>
+          </div>
+          <p className="text-sm text-gray-400 mb-4">
+            A dry-run of exactly what will change when you deploy. No resource is deleted — all operations are create/modify with backups already taken.
+          </p>
+          <div className="overflow-x-auto">
+            <table className="w-full text-sm">
+              <thead>
+                <tr className="border-b border-dark-700/50">
+                  <th className="text-left py-2.5 px-3 text-xs text-gray-500 font-semibold uppercase tracking-wider">Action</th>
+                  <th className="text-left py-2.5 px-3 text-xs text-gray-500 font-semibold uppercase tracking-wider">Recommendation</th>
+                  <th className="text-left py-2.5 px-3 text-xs text-gray-500 font-semibold uppercase tracking-wider">Pillar</th>
+                  <th className="text-left py-2.5 px-3 text-xs text-gray-500 font-semibold uppercase tracking-wider">Affected Resources</th>
+                  <th className="text-left py-2.5 px-3 text-xs text-gray-500 font-semibold uppercase tracking-wider">Downtime</th>
+                </tr>
+              </thead>
+              <tbody>
+                {changeSet.map((c, i) => (
+                  <tr key={i} className="border-b border-dark-800/50">
+                    <td className="py-2.5 px-3">
+                      <span className={`badge ${c.action === 'Create' ? 'bg-green-500/20 text-green-300' : 'bg-yellow-500/20 text-yellow-300'}`}>
+                        {c.action}
+                      </span>
+                    </td>
+                    <td className="py-2.5 px-3 text-white">{c.title}</td>
+                    <td className="py-2.5 px-3 text-gray-400">{c.pillar}</td>
+                    <td className="py-2.5 px-3 text-gray-400">{c.affected || '—'}</td>
+                    <td className="py-2.5 px-3">
+                      <span className={`text-xs font-medium ${c.downtime === 'NONE' ? 'text-green-400' : c.downtime === 'PLANNED' ? 'text-yellow-400' : 'text-red-400'}`}>
+                        {c.downtime || 'NONE'}
+                      </span>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
         </div>
       )}
 

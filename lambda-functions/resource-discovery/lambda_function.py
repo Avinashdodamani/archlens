@@ -1010,16 +1010,325 @@ def discover_apigatewayv2(credentials, region):
     return resources
 
 
-def discover_all_resources_via_config(credentials, region, already_found_ids):
-    """
-    Catch-all discovery using AWS Config's list_discovered_resources.
-    Unlike the Tagging API, AWS Config finds resources whether or not they are
-    TAGGED — so this guarantees untagged resources of any recorded service
-    still appear on the diagram. Degrades gracefully if Config isn't enabled.
-    """
+# ─── Additional SOW Appendix A service scanners ──────────────────────────────
+
+def discover_neptune(credentials, region):
+    """Discover Amazon Neptune graph database clusters."""
     resources = []
     try:
+        nep = get_client('neptune', credentials, region)
+        paginator = nep.get_paginator('describe_db_clusters')
+        for page in paginator.paginate():
+            for c in page.get('DBClusters', []):
+                # Neptune shares the RDS API; filter to neptune engine only
+                if 'neptune' in (c.get('Engine', '') or '').lower():
+                    resources.append({
+                        'type': 'Neptune', 'id': c.get('DBClusterArn', c['DBClusterIdentifier']),
+                        'name': c['DBClusterIdentifier'], 'engine': c.get('Engine', ''),
+                        'status': c.get('Status', ''), 'encrypted': c.get('StorageEncrypted', False),
+                        'region': region,
+                    })
+    except ClientError:
+        pass
+    return resources
+
+
+def discover_documentdb(credentials, region):
+    """Discover Amazon DocumentDB clusters."""
+    resources = []
+    try:
+        doc = get_client('docdb', credentials, region)
+        paginator = doc.get_paginator('describe_db_clusters')
+        for page in paginator.paginate():
+            for c in page.get('DBClusters', []):
+                if 'docdb' in (c.get('Engine', '') or '').lower():
+                    resources.append({
+                        'type': 'DocumentDB', 'id': c.get('DBClusterArn', c['DBClusterIdentifier']),
+                        'name': c['DBClusterIdentifier'], 'engine': c.get('Engine', ''),
+                        'status': c.get('Status', ''), 'encrypted': c.get('StorageEncrypted', False),
+                        'region': region,
+                    })
+    except ClientError:
+        pass
+    return resources
+
+
+def discover_opensearch(credentials, region):
+    """Discover Amazon OpenSearch domains."""
+    resources = []
+    try:
+        os_client = get_client('opensearch', credentials, region)
+        for d in os_client.list_domain_names().get('DomainNames', []):
+            name = d.get('DomainName', '')
+            resources.append({
+                'type': 'OpenSearch', 'id': name, 'name': name,
+                'engine_type': d.get('EngineType', ''), 'region': region,
+            })
+    except ClientError:
+        pass
+    return resources
+
+
+def discover_guardduty(credentials, region):
+    """Discover GuardDuty detectors."""
+    resources = []
+    try:
+        gd = get_client('guardduty', credentials, region)
+        for det_id in gd.list_detectors().get('DetectorIds', []):
+            resources.append({
+                'type': 'GuardDuty', 'id': det_id, 'name': f'detector-{det_id[:8]}',
+                'region': region,
+            })
+    except ClientError:
+        pass
+    return resources
+
+
+def discover_wafv2(credentials, region):
+    """Discover WAFv2 Web ACLs (regional scope)."""
+    resources = []
+    try:
+        waf = get_client('wafv2', credentials, region)
+        resp = waf.list_web_acls(Scope='REGIONAL', Limit=100)
+        for acl in resp.get('WebACLs', []):
+            resources.append({
+                'type': 'WAF', 'id': acl.get('ARN', acl.get('Id', '')),
+                'name': acl.get('Name', ''), 'region': region,
+            })
+    except ClientError:
+        pass
+    return resources
+
+
+def discover_transit_gateway(credentials, region):
+    """Discover Transit Gateways."""
+    resources = []
+    try:
+        ec2 = get_client('ec2', credentials, region)
+        for tgw in ec2.describe_transit_gateways().get('TransitGateways', []):
+            resources.append({
+                'type': 'TransitGateway', 'id': tgw.get('TransitGatewayId', ''),
+                'name': tgw.get('TransitGatewayId', ''), 'state': tgw.get('State', ''),
+                'region': region,
+            })
+    except ClientError:
+        pass
+    return resources
+
+
+def discover_security_hub(credentials, region):
+    """Discover Security Hub (enabled state as a resource node)."""
+    resources = []
+    try:
+        sh = get_client('securityhub', credentials, region)
+        hub = sh.describe_hub()
+        resources.append({
+            'type': 'SecurityHub', 'id': hub.get('HubArn', 'security-hub'),
+            'name': 'Security Hub', 'region': region,
+        })
+    except ClientError:
+        pass
+    return resources
+
+
+def discover_config(credentials, region):
+    """Discover AWS Config recorders (as a resource node)."""
+    resources = []
+    try:
+        cfg = get_client('config', credentials, region)
+        for rec in cfg.describe_configuration_recorders().get('ConfigurationRecorders', []):
+            resources.append({
+                'type': 'Config', 'id': rec.get('name', 'config-recorder'),
+                'name': rec.get('name', 'Config Recorder'), 'region': region,
+            })
+    except ClientError:
+        pass
+    return resources
+
+
+def discover_fsx(credentials, region):
+    """Discover FSx file systems."""
+    resources = []
+    try:
+        fsx = get_client('fsx', credentials, region)
+        paginator = fsx.get_paginator('describe_file_systems')
+        for page in paginator.paginate():
+            for fs in page.get('FileSystems', []):
+                resources.append({
+                    'type': 'FSx', 'id': fs.get('ResourceARN', fs.get('FileSystemId', '')),
+                    'name': fs.get('FileSystemId', ''), 'fs_type': fs.get('FileSystemType', ''),
+                    'region': region,
+                })
+    except ClientError:
+        pass
+    return resources
+
+
+def discover_batch(credentials, region):
+    """Discover AWS Batch compute environments."""
+    resources = []
+    try:
+        batch = get_client('batch', credentials, region)
+        for ce in batch.describe_compute_environments().get('computeEnvironments', []):
+            resources.append({
+                'type': 'Batch', 'id': ce.get('computeEnvironmentArn', ''),
+                'name': ce.get('computeEnvironmentName', ''), 'state': ce.get('state', ''),
+                'region': region,
+            })
+    except ClientError:
+        pass
+    return resources
+
+
+def discover_apprunner(credentials, region):
+    """Discover App Runner services."""
+    resources = []
+    try:
+        ar = get_client('apprunner', credentials, region)
+        for svc in ar.list_services().get('ServiceSummaryList', []):
+            resources.append({
+                'type': 'AppRunner', 'id': svc.get('ServiceArn', ''),
+                'name': svc.get('ServiceName', ''), 'status': svc.get('Status', ''),
+                'region': region,
+            })
+    except ClientError:
+        pass
+    return resources
+
+
+def discover_emr(credentials, region):
+    """Discover EMR clusters."""
+    resources = []
+    try:
+        emr = get_client('emr', credentials, region)
+        for c in emr.list_clusters(ClusterStates=['STARTING', 'BOOTSTRAPPING', 'RUNNING', 'WAITING']).get('Clusters', []):
+            resources.append({
+                'type': 'EMR', 'id': c.get('ClusterArn', c.get('Id', '')),
+                'name': c.get('Name', ''), 'region': region,
+            })
+    except ClientError:
+        pass
+    return resources
+
+
+def discover_appsync(credentials, region):
+    """Discover AppSync GraphQL APIs."""
+    resources = []
+    try:
+        ap = get_client('appsync', credentials, region)
+        for api in ap.list_graphql_apis().get('graphqlApis', []):
+            resources.append({
+                'type': 'AppSync', 'id': api.get('apiId', ''), 'name': api.get('name', ''),
+                'region': region,
+            })
+    except ClientError:
+        pass
+    return resources
+
+
+def discover_ssm(credentials, region):
+    """Discover Systems Manager managed instances (count as one node group)."""
+    resources = []
+    try:
+        ssm = get_client('ssm', credentials, region)
+        info = ssm.describe_instance_information(MaxResults=50).get('InstanceInformationList', [])
+        for inst in info:
+            resources.append({
+                'type': 'SystemsManager', 'id': inst.get('InstanceId', ''),
+                'name': inst.get('Name', inst.get('InstanceId', '')),
+                'platform': inst.get('PlatformName', ''), 'region': region,
+            })
+    except ClientError:
+        pass
+    return resources
+
+
+def discover_all_resources_via_config(credentials, region, already_found_ids):
+    """
+    Catch-all discovery using AWS Config's advanced query + list APIs.
+    Unlike the Tagging API, AWS Config finds resources whether or not they are
+    TAGGED — so this guarantees untagged resources of ANY recorded service
+    still appear on the diagram. It ALSO returns AWS's native relationship
+    graph (what each resource connects to), giving real connections.
+
+    Returns (resources, relationships). Degrades gracefully if Config
+    isn't enabled in the client account.
+    """
+    resources = []
+    relationships = []
+    try:
         config = get_client('config', credentials, region)
+
+        # ── Strategy 1: SelectResourceConfig — a SQL-like query that returns
+        #    EVERY resource Config records, across ALL types, in one query.
+        #    This is the true "list everything" call (tagged or untagged).
+        try:
+            next_token = None
+            query = ("SELECT resourceId, resourceName, resourceType, "
+                     "availabilityZone, configuration, relationships")
+            while True:
+                params = {'Expression': query, 'Limit': 100}
+                if next_token:
+                    params['NextToken'] = next_token
+                resp = config.select_resource_config(**params)
+
+                for raw in resp.get('Results', []):
+                    try:
+                        item = json.loads(raw)
+                    except (json.JSONDecodeError, TypeError):
+                        continue
+
+                    rid = item.get('resourceId', '')
+                    if not rid or rid in already_found_ids:
+                        continue
+
+                    res_type = item.get('resourceType', '')  # AWS::EC2::Instance
+                    parts = res_type.split('::')
+                    service = parts[1].lower() if len(parts) > 1 else 'unknown'
+                    raw_type = parts[2] if len(parts) > 2 else res_type
+                    display_type = _friendly_service_type(service, raw_type)
+
+                    resources.append({
+                        'type': display_type,
+                        'id': rid,
+                        'name': item.get('resourceName') or rid,
+                        'aws_service': service,
+                        'raw_resource_type': raw_type,
+                        'config_resource_type': res_type,
+                        'availability_zone': item.get('availabilityZone', ''),
+                        'region': region,
+                        'discovered_via': 'aws_config',
+                    })
+                    already_found_ids.add(rid)
+
+                    # Config's native relationship graph → real connections.
+                    for rel in item.get('relationships', []) or []:
+                        target_id = rel.get('resourceId', '')
+                        rel_name = rel.get('relationshipName', 'related_to')
+                        if target_id:
+                            relationships.append({
+                                'source': rid,
+                                'source_type': display_type,
+                                'target': target_id,
+                                'target_type': _friendly_service_type(
+                                    (rel.get('resourceType', '') or '').split('::')[1].lower()
+                                    if '::' in (rel.get('resourceType', '') or '') else 'unknown',
+                                    rel.get('resourceType', '')
+                                ),
+                                'relationship': rel_name.replace(' ', '_').lower(),
+                                'discovered_via': 'aws_config',
+                            })
+
+                next_token = resp.get('NextToken')
+                if not next_token:
+                    break
+            # If the advanced query worked, we have everything — return early.
+            if resources:
+                return resources, relationships
+        except ClientError:
+            pass  # advanced query not available — fall back to list per type
+
+        # ── Strategy 2 (fallback): list_discovered_resources per known type ──
         for res_type in _config_resource_types():
             try:
                 paginator = config.get_paginator('list_discovered_resources')
@@ -1030,7 +1339,7 @@ def discover_all_resources_via_config(credentials, region, already_found_ids):
                         if not rid or rid in already_found_ids:
                             continue
 
-                        parts = res_type.split('::')  # AWS::EC2::Instance
+                        parts = res_type.split('::')
                         service = parts[1].lower() if len(parts) > 1 else 'unknown'
                         raw_type = parts[2] if len(parts) > 2 else res_type
                         display_type = _friendly_service_type(service, raw_type)
@@ -1047,13 +1356,13 @@ def discover_all_resources_via_config(credentials, region, already_found_ids):
                         })
                         already_found_ids.add(rid)
             except ClientError:
-                continue  # this resource type not recorded — skip quietly
+                continue
     except ClientError as e:
         logger.info(f"AWS Config not accessible in {region}: {e.response['Error']['Code']}")
     except Exception as e:
         logger.info(f"AWS Config discovery skipped in {region}: {str(e)}")
 
-    return resources
+    return resources, relationships
 
 
 def _config_resource_types():
@@ -1211,6 +1520,35 @@ def _friendly_service_type(service, res_type):
     diagram's icon map. Falls back to a Title-cased service name so unknown
     services still render with a readable label + generic icon.
     """
+    rt = (res_type or '').lower()
+
+    # FIRST: resolve EC2 sub-resource types by their resource_type, because the
+    # 'ec2' service namespace covers VPC, Subnet, SecurityGroup, IGW, NAT, etc.
+    # Without this, a VPC ARN (service=ec2, type=vpc) would wrongly show as EC2.
+    ec2_subtype_map = {
+        'vpc': 'VPC',
+        'subnet': 'Subnet',
+        'security-group': 'SecurityGroup',
+        'internet-gateway': 'InternetGateway',
+        'natgateway': 'NATGateway',
+        'nat-gateway': 'NATGateway',
+        'route-table': 'RouteTable',
+        'network-interface': 'NetworkInterface',
+        'volume': 'EBS',
+        'elastic-ip': 'ElasticIP',
+        'eip': 'ElasticIP',
+        'instance': 'EC2',
+        'image': 'AMI',
+        'snapshot': 'Snapshot',
+        'network-acl': 'NetworkACL',
+        'vpc-endpoint': 'VPCEndpoint',
+        'transit-gateway': 'TransitGateway',
+        'dhcp-options': 'DHCPOptions',
+        'key-pair': 'KeyPair',
+    }
+    if service == 'ec2' and rt in ec2_subtype_map:
+        return ec2_subtype_map[rt]
+
     # Map common ARN service codes to our diagram type keys (which have icons).
     service_map = {
         'ec2': 'EC2',
@@ -1236,6 +1574,16 @@ def _friendly_service_type(service, res_type):
         'codebuild': 'CodeBuild',
         'cognito-idp': 'Cognito',
         'iam': 'IAM',
+        'secretsmanager': 'SecretsManager',
+        'redshift': 'Redshift',
+        'kinesis': 'Kinesis',
+        'sagemaker': 'SageMaker',
+        'glue': 'Glue',
+        'athena': 'Athena',
+        'cloudtrail': 'CloudTrail',
+        'elasticbeanstalk': 'ElasticBeanstalk',
+        'autoscaling': 'AutoScaling',
+        'backup': 'Backup',
     }
     if service in service_map:
         return service_map[service]
@@ -1275,6 +1623,39 @@ def discover_services_from_cost_explorer(credentials):
         logger.info(f"Cost Explorer query skipped: {str(e)}")
 
     return services
+
+
+def discover_cost_trend(credentials):
+    """
+    Query Cost Explorer for the last 3 monthly totals (SOW 4.1 — 30/60/90-day
+    cost trend widget). Returns a list of {month, cost_usd} newest-last.
+    Requires Cost Explorer access in the client account.
+    """
+    trend = []
+    try:
+        from datetime import timedelta
+        ce = get_client('ce', credentials, 'us-east-1')
+        end = datetime.utcnow().date().replace(day=1)
+        # Go back ~3 full months
+        start_month = end
+        for _ in range(3):
+            # move start back one month
+            prev = (start_month - timedelta(days=1)).replace(day=1)
+            start_month = prev
+        response = ce.get_cost_and_usage(
+            TimePeriod={'Start': start_month.isoformat(), 'End': end.isoformat()},
+            Granularity='MONTHLY',
+            Metrics=['UnblendedCost'],
+        )
+        for result in response.get('ResultsByTime', []):
+            period = result.get('TimePeriod', {}).get('Start', '')
+            amount = float(result.get('Total', {}).get('UnblendedCost', {}).get('Amount', 0))
+            trend.append({'month': period, 'cost_usd': round(amount, 2)})
+    except ClientError as e:
+        logger.info(f"Cost trend not accessible: {e.response['Error']['Code']}")
+    except Exception as e:
+        logger.info(f"Cost trend query skipped: {str(e)}")
+    return trend
 
 
 def build_relationships(resources):
@@ -1437,9 +1818,25 @@ def lambda_handler(event, context):
             all_resources.extend(safe_discover(discover_cloudtrail, 'CloudTrail', credentials, region))
             all_resources.extend(safe_discover(discover_elasticbeanstalk, 'ElasticBeanstalk', credentials, region))
             all_resources.extend(safe_discover(discover_apigatewayv2, 'APIGatewayV2', credentials, region))
+            # SOW Appendix A additional services
+            all_resources.extend(safe_discover(discover_neptune, 'Neptune', credentials, region))
+            all_resources.extend(safe_discover(discover_documentdb, 'DocumentDB', credentials, region))
+            all_resources.extend(safe_discover(discover_opensearch, 'OpenSearch', credentials, region))
+            all_resources.extend(safe_discover(discover_guardduty, 'GuardDuty', credentials, region))
+            all_resources.extend(safe_discover(discover_wafv2, 'WAF', credentials, region))
+            all_resources.extend(safe_discover(discover_transit_gateway, 'TransitGateway', credentials, region))
+            all_resources.extend(safe_discover(discover_security_hub, 'SecurityHub', credentials, region))
+            all_resources.extend(safe_discover(discover_config, 'Config', credentials, region))
+            all_resources.extend(safe_discover(discover_fsx, 'FSx', credentials, region))
+            all_resources.extend(safe_discover(discover_batch, 'Batch', credentials, region))
+            all_resources.extend(safe_discover(discover_apprunner, 'AppRunner', credentials, region))
+            all_resources.extend(safe_discover(discover_emr, 'EMR', credentials, region))
+            all_resources.extend(safe_discover(discover_appsync, 'AppSync', credentials, region))
+            all_resources.extend(safe_discover(discover_ssm, 'SystemsManager', credentials, region))
 
         # ── Safety-net catch-alls so NOTHING is missed (tagged or untagged) ──
         already_found_arns = {r.get('id', '') for r in all_resources}
+        config_relationships = []  # real relationships from AWS Config (if enabled)
         for region in scan_regions:
             # 1. Tagging API → any TAGGED resource of a service without a scanner.
             tagged = safe_discover(
@@ -1452,18 +1849,25 @@ def lambda_handler(event, context):
                     already_found_arns.add(r.get('id'))
 
             # 2. AWS Config → UNTAGGED resources too (any recorded service),
-            #    when the client has Config enabled. Guarantees full coverage.
-            config_found = safe_discover(
-                lambda creds, reg: discover_all_resources_via_config(creds, reg, already_found_arns),
-                'AWSConfig', credentials, region
-            )
-            for r in config_found:
-                if r.get('id') not in already_found_arns:
-                    all_resources.append(r)
-                    already_found_arns.add(r.get('id'))
+            #    PLUS real relationships from Config's native graph, when the
+            #    client has Config enabled. Guarantees full coverage + connections.
+            try:
+                config_found, config_rels = discover_all_resources_via_config(
+                    credentials, region, already_found_arns
+                )
+                for r in config_found:
+                    if r.get('id') not in already_found_arns:
+                        all_resources.append(r)
+                        already_found_arns.add(r.get('id'))
+                # Store Config relationships to merge after build_relationships.
+                config_relationships.extend(config_rels)
+            except Exception as e:
+                logger.info(f"AWS Config discovery skipped in {region}: {str(e)}")
 
         # ── Cost Explorer: full service footprint (matches billing) ──────────
         services_footprint = discover_services_from_cost_explorer(credentials)
+        # ── Cost Explorer: 90-day monthly trend (SOW 4.1 cost trend widget) ──
+        cost_trend = discover_cost_trend(credentials)
 
         # ── Add billed-but-not-discovered services as diagram nodes ──────────
         # Any service the client is billed for (Cost Explorer) that we did NOT
@@ -1497,8 +1901,20 @@ def lambda_handler(event, context):
             })
             discovered_services.add(svc_code.lower())
 
-        # Build relationships
+        # Build relationships from resource configs, then merge AWS Config's
+        # native relationship graph (deduped) — Config gives real connections
+        # for resources our own logic might not link.
         relationships = build_relationships(all_resources)
+        resource_ids = {r.get('id') for r in all_resources}
+        seen_rel = {(r['source'], r['target']) for r in relationships}
+        for rel in config_relationships:
+            key = (rel.get('source'), rel.get('target'))
+            # only keep relationships where both endpoints are known resources
+            if (key not in seen_rel
+                    and rel.get('source') in resource_ids
+                    and rel.get('target') in resource_ids):
+                relationships.append(rel)
+                seen_rel.add(key)
 
         # Generate scan ID
         scan_id = f"scan-{account_id}-{datetime.utcnow().strftime('%Y%m%d%H%M%S')}"
@@ -1520,6 +1936,7 @@ def lambda_handler(event, context):
             'resources': all_resources,
             'relationships': relationships,
             'servicesFootprint': services_footprint,
+            'costTrend': cost_trend,
             'summary': {
                 'total_resources': len(all_resources),
                 'total_relationships': len(relationships),

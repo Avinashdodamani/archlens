@@ -123,10 +123,73 @@ export async function triggerBackup(params: {
   return apiRequest('/backup', 'POST', params as unknown as Record<string, unknown>);
 }
 
+/**
+ * Detect drift between the two most recent scans for an account (SOW 4.5).
+ */
+export async function detectDrift(params: {
+  accountId: string;
+  baselineScanId?: string;
+  currentScanId?: string;
+}) {
+  return apiRequest('/detect-drift', 'POST', params as unknown as Record<string, unknown>);
+}
+
+/**
+ * Generate an executive-summary report for leadership (SOW 4.5).
+ */
+export async function generateReport(params: {
+  scanId: string;
+  recommendationId?: string;
+}) {
+  return apiRequest('/generate-report', 'POST', params as unknown as Record<string, unknown>);
+}
+
+/**
+ * Manage scheduled scans (SOW 4.2): create | list | enable | disable | delete.
+ */
+export async function manageSchedule(params: {
+  action: 'create' | 'list' | 'enable' | 'disable' | 'delete';
+  accountId?: string;
+  scheduleId?: string;
+  roleArn?: string;
+  region?: string;
+  regions?: string[];
+  externalId?: string;
+  frequency?: 'once' | 'daily';
+  runAt?: string;
+  dailyTime?: string;
+  label?: string;
+}) {
+  return apiRequest('/schedule', 'POST', params as unknown as Record<string, unknown>);
+}
+
+/**
+ * Orchestrate the full lifecycle via Step Functions (SOW Section 6).
+ * actions: start | status | resume | stop
+ */
+export async function workflow(params: {
+  action: 'start' | 'status' | 'resume' | 'stop';
+  roleArn?: string;
+  region?: string;
+  regions?: string[];
+  accountId?: string;
+  externalId?: string;
+  executionArn?: string;
+  taskToken?: string;
+  receiptHandle?: string;
+  output?: Record<string, unknown>;
+}) {
+  return apiRequest('/workflow', 'POST', params as unknown as Record<string, unknown>);
+}
+
 export default {
   discoverResources,
   analyzeArchitecture,
   generateCFT,
   generateTerraform,
   triggerBackup,
+  detectDrift,
+  generateReport,
+  manageSchedule,
+  workflow,
 };

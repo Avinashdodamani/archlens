@@ -49,6 +49,24 @@ const ICON_FILES: Record<string, string> = {
   Subnet: 'arch-amazon-virtual-private-cloud-64.svg',
   InternetGateway: 'arch-amazon-virtual-private-cloud-64.svg',
   NATGateway: 'arch-amazon-virtual-private-cloud-64.svg',
+  RouteTable: 'arch-amazon-virtual-private-cloud-64.svg',
+  Backup: 'arch-aws-backup-64.svg',
+  Cost: 'arch-aws-cost-explorer-64.svg',
+  // SOW Appendix A additional services
+  Neptune: 'arch-amazon-neptune-64.svg',
+  DocumentDB: 'arch-amazon-documentdb-64.svg',
+  OpenSearch: 'arch-amazon-opensearch-service-64.svg',
+  GuardDuty: 'arch-amazon-guardduty-64.svg',
+  WAF: 'arch-aws-waf-64.svg',
+  TransitGateway: 'arch-aws-transit-gateway-64.svg',
+  SecurityHub: 'arch-aws-security-hub-64.svg',
+  Config: 'arch-aws-config-64.svg',
+  FSx: 'arch-amazon-fsx-64.svg',
+  Batch: 'arch-aws-batch-64.svg',
+  AppRunner: 'arch-aws-app-runner-64.svg',
+  EMR: 'arch-amazon-emr-64.svg',
+  AppSync: 'arch-aws-appsync-64.svg',
+  SystemsManager: 'arch-aws-systems-manager-64.svg',
 };
 
 /**

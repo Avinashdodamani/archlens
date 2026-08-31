@@ -12,10 +12,14 @@ import {
   CheckCircleIcon,
   ArrowTrendingUpIcon,
   ServerStackIcon,
-  ExclamationTriangleIcon,
+  ArrowUpIcon,
+  ArrowDownIcon,
+  CurrencyDollarIcon,
 } from '@heroicons/react/24/outline';
 import { WAF_PILLARS } from '../config/constants';
 import { getServiceIconPath } from '../config/aws-icon-map';
+import WafRadarChart from '../components/WafRadarChart';
+import { scoreTextClass, scoreBarClass } from '../config/theme';
 
 export default function DashboardPage() {
   const { scanResult, analysisResult, savedScans, connectedAccounts, activeAccountId, darkMode } = useAppStore();
@@ -36,6 +40,9 @@ export default function DashboardPage() {
     { label: 'Monitor', done: false },
   ];
   const completedSteps = steps.filter((s) => s.done).length;
+
+  // Cost trend (from Cost Explorer, via discovery — real per-account values)
+  const costTrend = scanResult?.costTrend || [];
 
   return (
     <div className="space-y-6 animate-fade-in">
@@ -65,16 +72,12 @@ export default function DashboardPage() {
                 <circle cx="50" cy="50" r="42" fill="none" strokeWidth="7" className="text-dark-700" stroke="currentColor" />
                 <circle cx="50" cy="50" r="42" fill="none" strokeWidth="7" strokeLinecap="round"
                   strokeDasharray={`${overallScore * 2.64} 264`}
-                  className={`transition-all duration-1000 ease-out ${
-                    overallScore >= 70 ? 'text-green-400' : overallScore >= 40 ? 'text-yellow-400' : overallScore > 0 ? 'text-red-400' : 'text-dark-600'
-                  }`}
+                  className={`transition-all duration-1000 ease-out ${scoreTextClass(overallScore)}`}
                   stroke="currentColor"
                 />
               </svg>
               <div className="absolute inset-0 flex items-center justify-center">
-                <span className={`text-lg font-bold ${
-                  overallScore >= 70 ? 'text-green-400' : overallScore >= 40 ? 'text-yellow-400' : overallScore > 0 ? 'text-red-400' : 'text-gray-600'
-                }`}>
+                <span className={`text-lg font-medium ${scoreTextClass(overallScore)}`}>
                   {overallScore || '—'}
                 </span>
               </div>
@@ -116,7 +119,7 @@ export default function DashboardPage() {
             </div>
             <div>
               <p className="text-xs text-gray-500 font-semibold uppercase tracking-wider">Recommendations</p>
-              <p className={`text-2xl font-bold mt-0.5 ${totalRecommendations > 0 ? 'text-white' : 'text-gray-600'}`}>
+              <p className={`text-2xl font-medium mt-0.5 ${totalRecommendations > 0 ? 'text-white' : 'text-gray-600'}`}>
                 {totalRecommendations || '—'}
               </p>
               {riskSummary && (
@@ -221,6 +224,43 @@ export default function DashboardPage() {
         </div>
       </div>
 
+      {/* Cost Trend */}
+      <div className="card">
+        <div className="flex items-center justify-between mb-4">
+          <h2 className="text-base font-semibold text-white flex items-center gap-2">
+            <CurrencyDollarIcon className="w-5 h-5 text-gray-400" />
+            Cost Trend
+          </h2>
+          <span className="text-xs text-gray-500 bg-dark-900 px-2.5 py-1 rounded-full">Last 3 months</span>
+        </div>
+        {costTrend.length > 0 ? (
+          <div className="flex items-end gap-4 h-40 px-2">
+            {costTrend.map((m) => {
+              const maxCost = Math.max(...costTrend.map((c) => c.cost_usd), 1);
+              const heightPct = Math.max((m.cost_usd / maxCost) * 100, 3);
+              const label = new Date(m.month + 'T00:00:00').toLocaleDateString(undefined, { month: 'short', year: 'numeric' });
+              return (
+                <div key={m.month} className="flex-1 flex flex-col items-center justify-end h-full">
+                  <span className="text-sm text-gray-200 font-medium mb-1">${m.cost_usd.toFixed(2)}</span>
+                  <div
+                    className="w-full max-w-[80px] bg-gradient-to-t from-primary-600 to-primary-400 rounded-t-lg transition-all duration-700"
+                    style={{ height: `${heightPct}%` }}
+                  />
+                  <span className="text-xs text-gray-500 mt-2">{label}</span>
+                </div>
+              );
+            })}
+          </div>
+        ) : (
+          <div className="text-center py-10">
+            <CurrencyDollarIcon className="w-8 h-8 text-gray-600 mx-auto mb-2" />
+            <p className="text-sm text-gray-500">
+              No cost data available yet. Run a scan on an account with Cost Explorer access to see monthly spend.
+            </p>
+          </div>
+        )}
+      </div>
+
       {/* WAF Scores + Quick Actions */}
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
         {/* WAF Pillar Scores */}
@@ -233,40 +273,34 @@ export default function DashboardPage() {
               </h2>
               <span className="text-xs text-gray-500 bg-dark-900 px-2.5 py-1 rounded-full">6 pillars</span>
             </div>
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-              {WAF_PILLARS.map((pillar) => {
-                const score = pillarScores[pillar.key]?.score || 0;
-                const topRisk = pillarScores[pillar.key]?.top_risk;
-                return (
-                  <div key={pillar.key} className="bg-dark-900/70 rounded-xl p-4 border border-dark-700/50 hover:border-dark-600 transition-colors">
-                    <div className="flex items-center justify-between mb-2.5">
-                      <span className="text-sm font-medium text-gray-200 flex items-center gap-2">
-                        <span className="text-base">{pillar.icon}</span>
-                        <span>{pillar.name}</span>
-                      </span>
-                      <span className={`text-sm font-bold ${
-                        score >= 70 ? 'text-green-400' : score >= 40 ? 'text-yellow-400' : 'text-red-400'
-                      }`}>{score}%</span>
+            <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+              {/* Radar chart */}
+              <div className="bg-dark-900/50 rounded-xl p-3 border border-dark-700/50 flex items-center justify-center">
+                <WafRadarChart pillarScores={pillarScores} isDark={darkMode} />
+              </div>
+              {/* Pillar bars */}
+              <div className="space-y-2.5">
+                {WAF_PILLARS.map((pillar) => {
+                  const score = pillarScores[pillar.key]?.score || 0;
+                  return (
+                    <div key={pillar.key} className="bg-dark-900/70 rounded-lg p-2.5 border border-dark-700/50">
+                      <div className="flex items-center justify-between mb-1.5">
+                        <span className="text-xs font-medium text-gray-200 flex items-center gap-1.5">
+                          <span>{pillar.icon}</span>
+                          <span>{pillar.name}</span>
+                        </span>
+                        <span className={`text-xs font-medium ${scoreTextClass(score)}`}>{score}%</span>
+                      </div>
+                      <div className="w-full bg-dark-700 rounded-full h-1.5">
+                        <div
+                          className={`h-1.5 rounded-full transition-all duration-1000 ease-out ${scoreBarClass(score)}`}
+                          style={{ width: `${score}%` }}
+                        />
+                      </div>
                     </div>
-                    <div className="w-full bg-dark-700 rounded-full h-2">
-                      <div
-                        className={`h-2 rounded-full transition-all duration-1000 ease-out ${
-                          score >= 70 ? 'bg-gradient-to-r from-green-600 to-green-400'
-                          : score >= 40 ? 'bg-gradient-to-r from-yellow-600 to-yellow-400'
-                          : 'bg-gradient-to-r from-red-600 to-red-400'
-                        }`}
-                        style={{ width: `${score}%` }}
-                      />
-                    </div>
-                    {topRisk && (
-                      <p className="text-[10px] text-gray-500 mt-2 flex items-start gap-1">
-                        <ExclamationTriangleIcon className="w-3 h-3 text-yellow-500 flex-shrink-0 mt-px" />
-                        {topRisk}
-                      </p>
-                    )}
-                  </div>
-                );
-              })}
+                  );
+                })}
+              </div>
             </div>
           </div>
         ) : (
@@ -399,22 +433,35 @@ export default function DashboardPage() {
                 </tr>
               </thead>
               <tbody>
-                {savedScans.slice(0, 5).map((scan, idx) => (
+                {[...savedScans].sort((a, b) => b.scanNumber - a.scanNumber).slice(0, 5).map((scan) => {
+                  // Trend vs the immediately-previous scan number
+                  const prev = savedScans.find((s) => s.scanNumber === scan.scanNumber - 1);
+                  const delta = prev ? scan.resourceCount - prev.resourceCount : null;
+                  return (
                   <tr key={scan.scanNumber} className="border-b border-dark-800/50 hover:bg-dark-800/30 transition-colors">
-                    <td className="py-3 px-4 text-primary-400 font-bold">{idx + 1}</td>
+                    <td className="py-3 px-4 text-primary-400 font-bold">{scan.scanNumber}</td>
                     <td className="py-3 px-4">
                       <p className="text-white font-medium">{scan.accountName}</p>
                       <p className="text-[10px] text-gray-500">{scan.accountId}</p>
                     </td>
                     <td className="py-3 px-4 text-gray-300 font-medium">{scan.region}</td>
                     <td className="py-3 px-4">
-                      <span className="inline-flex items-center px-2.5 py-1 rounded-full text-xs font-semibold bg-blue-500/10 text-blue-400">
-                        {scan.resourceCount}
+                      <span className="inline-flex items-center gap-2">
+                        <span className="inline-flex items-center px-2.5 py-1 rounded-full text-xs font-semibold bg-blue-500/10 text-blue-400">
+                          {scan.resourceCount}
+                        </span>
+                        {delta !== null && delta !== 0 && (
+                          <span className={`inline-flex items-center gap-0.5 text-[11px] font-medium ${delta > 0 ? 'text-green-400' : 'text-red-400'}`}>
+                            {delta > 0 ? <ArrowUpIcon className="w-3 h-3" /> : <ArrowDownIcon className="w-3 h-3" />}
+                            {Math.abs(delta)}
+                          </span>
+                        )}
                       </span>
                     </td>
                     <td className="py-3 px-4 text-gray-400 text-xs">{new Date(scan.timestamp).toLocaleString()}</td>
                   </tr>
-                ))}
+                  );
+                })}
               </tbody>
             </table>
           </div>

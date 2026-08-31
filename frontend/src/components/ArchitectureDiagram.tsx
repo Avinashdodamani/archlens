@@ -59,6 +59,7 @@ interface Relationship {
 interface ArchitectureDiagramProps {
   resources: Resource[];
   relationships: Relationship[];
+  servicesFootprint?: { service: string; monthly_cost_usd: number }[];
 }
 
 // ─── Constants ───────────────────────────────────────────────────────────────
@@ -374,7 +375,7 @@ function buildCloudChildren(
 
 // ─── ELK → ReactFlow conversion ────────────────────────────────────────────────
 
-function serviceNodeData(r: Resource, isDark: boolean) {
+function serviceNodeData(r: Resource, isDark: boolean, costUsd?: number) {
   const iconPath = getIconPath(r.type, isDark);
   return {
     label: (
@@ -403,6 +404,11 @@ function serviceNodeData(r: Resource, isDark: boolean) {
         <div style={{ fontSize: '9px', color: isDark ? '#94a3b8' : '#64748b' }}>
           {r.type}
         </div>
+        {costUsd !== undefined && costUsd > 0 && (
+          <div style={{ fontSize: '9px', fontWeight: 700, color: '#22c55e', marginTop: '1px' }}>
+            ${costUsd.toFixed(0)}/mo
+          </div>
+        )}
       </div>
     ),
   };
@@ -437,7 +443,9 @@ function boundaryNodeData(labelText: string, labelColor: string) {
 function elkToReactFlow(
   root: ElkNode,
   isDark: boolean,
-  viewMode: DiagramViewMode
+  viewMode: DiagramViewMode,
+  costMap: Map<string, number> = new Map(),
+  maxCost = 0
 ): Node[] {
   const nodes: Node[] = [];
   const groupStyles = getGroupStyles(isDark);
@@ -495,17 +503,30 @@ function elkToReactFlow(
         boxShadow = `0 0 8px ${borderColor}80`;
       }
 
+      // Cost View: size the node by its service's monthly cost + show $.
+      const isCost = viewMode === 'cost';
+      const costUsd = isCost ? costMap.get(r.type) : undefined;
+      let extraW = 0;
+      let extraH = 0;
+      if (isCost && costUsd && maxCost > 0) {
+        const scale = Math.min(costUsd / maxCost, 1); // 0..1
+        extraW = Math.round(scale * 60);
+        extraH = Math.round(scale * 40);
+        borderColor = '#22c55e';
+        boxShadow = `0 0 ${4 + scale * 12}px #22c55e80`;
+      }
+
       nodes.push({
         id: r.id,
         type: 'default',
         position: { x, y },
         ...(parentId ? { parentNode: parentId, extent: 'parent' as const } : {}),
-        data: serviceNodeData(r, isDark),
+        data: serviceNodeData(r, isDark, costUsd),
         style: {
-          width: node.width ?? NODE_WIDTH,
-          height: node.height ?? NODE_HEIGHT,
+          width: (node.width ?? NODE_WIDTH) + extraW,
+          height: (node.height ?? NODE_HEIGHT) + extraH,
           background: isDark ? '#1e293b' : '#ffffff',
-          border: `${isSecurity ? 3 : 2}px solid ${borderColor}`,
+          border: `${isSecurity || isCost ? 3 : 2}px solid ${borderColor}`,
           borderRadius: '10px',
           ...(boxShadow ? { boxShadow } : {}),
         },
@@ -554,8 +575,11 @@ function buildEdges(
   serviceResources: Resource[],
   relationships: Relationship[],
   isDark: boolean,
-  hasInternet: boolean
+  hasInternet: boolean,
+  viewMode: DiagramViewMode = 'logical'
 ): Edge[] {
+  const isDataFlow = viewMode === 'dataflow';
+  const flowColor = isDark ? '#38bdf8' : '#0284c7'; // sky — emphasizes data flow
   const edges: Edge[] = [];
   const nodeIds = new Set(serviceResources.map((r) => r.id));
   const typeToIds = new Map<string, string[]>();
@@ -574,16 +598,17 @@ function buildEdges(
       if (edgeSet.has(key)) continue;
       edgeSet.add(key);
 
+      const relStroke = isDataFlow ? flowColor : (isDark ? '#64748b' : '#94a3b8');
       edges.push({
         id: `rel-${edges.length}`,
         source: rel.source,
         target: rel.target,
         type: 'smoothstep',
-        animated: false,
-        style: { stroke: isDark ? '#64748b' : '#94a3b8', strokeWidth: 1.5 },
+        animated: isDataFlow,
+        style: { stroke: relStroke, strokeWidth: isDataFlow ? 2.5 : 1.5 },
         markerEnd: {
           type: MarkerType.ArrowClosed,
-          color: isDark ? '#64748b' : '#94a3b8',
+          color: relStroke,
           width: 16,
           height: 16,
         },
@@ -644,13 +669,13 @@ function buildEdges(
             type: 'smoothstep',
             animated: true,
             style: {
-              stroke: isDark ? '#475569' : '#cbd5e1',
-              strokeWidth: 1,
-              strokeDasharray: '5 3',
+              stroke: isDataFlow ? flowColor : (isDark ? '#475569' : '#cbd5e1'),
+              strokeWidth: isDataFlow ? 2 : 1,
+              ...(isDataFlow ? {} : { strokeDasharray: '5 3' }),
             },
             markerEnd: {
               type: MarkerType.ArrowClosed,
-              color: isDark ? '#475569' : '#cbd5e1',
+              color: isDataFlow ? flowColor : (isDark ? '#475569' : '#cbd5e1'),
               width: 14,
               height: 14,
             },
@@ -669,12 +694,41 @@ async function buildAndLayout(
   resources: Resource[],
   relationships: Relationship[],
   isDark: boolean,
-  viewMode: DiagramViewMode
+  viewMode: DiagramViewMode,
+  servicesFootprint: { service: string; monthly_cost_usd: number }[] = []
 ): Promise<{ nodes: Node[]; edges: Edge[] }> {
   const serviceResources = resources.filter((r) => !INFRASTRUCTURE_TYPES.has(r.type));
 
   if (serviceResources.length === 0) {
     return { nodes: [], edges: [] };
+  }
+
+  // Cost View: map each resource TYPE → monthly cost from the billing footprint.
+  // Billing service strings are fuzzy (e.g. "Amazon Elastic Compute Cloud"),
+  // so match by keyword against our type names.
+  const costMap = new Map<string, number>();
+  let maxCost = 0;
+  if (viewMode === 'cost' && servicesFootprint.length) {
+    const typeKeywords: Record<string, string[]> = {
+      EC2: ['elastic compute', 'ec2'], Lambda: ['lambda'], S3: ['simple storage', 's3'],
+      RDS: ['relational database', 'rds'], DynamoDB: ['dynamodb'], VPC: ['virtual private cloud', 'vpc'],
+      CloudFront: ['cloudfront'], ELB: ['load balancing'], APIGateway: ['api gateway'],
+      ECS: ['container service', 'ecs'], EKS: ['kubernetes', 'eks'], SNS: ['notification'],
+      SQS: ['queue'], KMS: ['key management'], ElastiCache: ['elasticache'], EFS: ['elastic file'],
+      Redshift: ['redshift'], Route53: ['route 53'], CloudWatch: ['cloudwatch'],
+      Neptune: ['neptune'], OpenSearch: ['opensearch', 'elasticsearch'], EMR: ['emr'],
+    };
+    for (const r of serviceResources) {
+      const kws = typeKeywords[r.type];
+      if (!kws) continue;
+      const match = servicesFootprint.find((s) =>
+        kws.some((kw) => (s.service || '').toLowerCase().includes(kw))
+      );
+      if (match) {
+        costMap.set(r.type, match.monthly_cost_usd);
+        maxCost = Math.max(maxCost, match.monthly_cost_usd);
+      }
+    }
   }
 
   // Metadata maps from the full (unfiltered) resource set.
@@ -739,16 +793,18 @@ async function buildAndLayout(
       const single = elkToReactFlow(
         { ...child, __kind: 'internet' },
         isDark,
-        viewMode
+        viewMode,
+        costMap,
+        maxCost
       );
       nodes.push(...single);
     } else {
       // AWS Cloud boundary subtree.
-      nodes.push(...elkToReactFlow(child, isDark, viewMode));
+      nodes.push(...elkToReactFlow(child, isDark, viewMode, costMap, maxCost));
     }
   }
 
-  const edges = buildEdges(serviceResources, relationships, isDark, hasPublicFacing);
+  const edges = buildEdges(serviceResources, relationships, isDark, hasPublicFacing, viewMode);
 
   return { nodes, edges };
 }
@@ -792,6 +848,23 @@ function DiagramLegend({
         />
         <span>Inferred</span>
       </div>
+      {viewMode === 'cost' && (
+        <>
+          <div style={{ marginTop: '8px', fontWeight: 600, marginBottom: '4px' }}>
+            Cost View
+          </div>
+          <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+            <div style={{ width: '10px', height: '10px', borderRadius: '3px', background: '#22c55e' }} />
+            <span>Larger = higher monthly $</span>
+          </div>
+        </>
+      )}
+      {viewMode === 'dataflow' && (
+        <div style={{ display: 'flex', alignItems: 'center', gap: '6px', marginTop: '8px' }}>
+          <div style={{ width: '24px', height: '2px', background: isDark ? '#38bdf8' : '#0284c7' }} />
+          <span>Data flow direction</span>
+        </div>
+      )}
       {viewMode === 'security' && (
         <>
           <div style={{ marginTop: '8px', fontWeight: 600, marginBottom: '4px' }}>
@@ -820,6 +893,7 @@ function DiagramLegend({
 export default function ArchitectureDiagram({
   resources,
   relationships,
+  servicesFootprint = [],
 }: ArchitectureDiagramProps) {
   const { darkMode: isDark, diagramViewMode } = useAppStore();
 
@@ -837,7 +911,7 @@ export default function ArchitectureDiagram({
     }
 
     setIsLayingOut(true);
-    buildAndLayout(resources, relationships, isDark, diagramViewMode)
+    buildAndLayout(resources, relationships, isDark, diagramViewMode, servicesFootprint)
       .then(({ nodes: laidNodes, edges: laidEdges }) => {
         if (cancelled) return;
         setNodes(laidNodes);
@@ -854,7 +928,7 @@ export default function ArchitectureDiagram({
     return () => {
       cancelled = true;
     };
-  }, [resources, relationships, isDark, diagramViewMode, setNodes, setEdges]);
+  }, [resources, relationships, isDark, diagramViewMode, servicesFootprint, setNodes, setEdges]);
 
   const diagramBg = getDiagramBackground(isDark);
   const gridColor = getDiagramGridColor(isDark);
@@ -898,7 +972,9 @@ export default function ArchitectureDiagram({
       ? 'Network View'
       : diagramViewMode === 'security'
       ? 'Security View'
-      : diagramViewMode.charAt(0).toUpperCase() + diagramViewMode.slice(1) + ' View';
+      : diagramViewMode === 'dataflow'
+      ? 'Data Flow View'
+      : 'Cost View';
 
   return (
     <div style={{ width: '100%', height: '100%', position: 'relative' }}>
@@ -1006,3 +1082,4 @@ export default function ArchitectureDiagram({
     </div>
   );
 }
+

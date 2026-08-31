@@ -63,9 +63,13 @@ export const WAF_PILLARS = [
  */
 export { AWS_SERVICE_COLORS as RESOURCE_TYPE_COLORS } from './aws-theme';
 
+/**
+ * Priority badge config. Text uses a readable shade from the same color family
+ * (never plain white/black). Canonical source is theme.ts PRIORITY_BADGE.
+ */
 export const PRIORITY_CONFIG = {
-  CRITICAL: { color: 'text-red-400', bg: 'bg-red-500/20', label: 'Critical' },
-  HIGH: { color: 'text-orange-400', bg: 'bg-orange-500/20', label: 'High' },
-  MEDIUM: { color: 'text-yellow-400', bg: 'bg-yellow-500/20', label: 'Medium' },
-  LOW: { color: 'text-green-400', bg: 'bg-green-500/20', label: 'Low' },
+  CRITICAL: { color: 'text-red-300', bg: 'bg-red-500/20', label: 'Critical' },
+  HIGH: { color: 'text-orange-300', bg: 'bg-orange-500/20', label: 'High' },
+  MEDIUM: { color: 'text-yellow-300', bg: 'bg-yellow-500/20', label: 'Medium' },
+  LOW: { color: 'text-green-300', bg: 'bg-green-500/20', label: 'Low' },
 };

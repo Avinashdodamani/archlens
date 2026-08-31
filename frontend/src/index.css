@@ -4,9 +4,40 @@
 
 @layer base {
   :root {
+    /* Accent */
     --color-primary: #1A56DB;
+    --color-ai: #8B5CF6;
+
+    /* Surface / background (single source of truth) */
+    --surface-0: #0f172a; /* app background */
+    --surface-1: #1e293b; /* cards */
+    --surface-2: #1F2A37; /* panels */
+    --border: #334155;
+
+    /* Semantic status */
+    --status-success: #10B981;
+    --status-warning: #F59E0B;
+    --status-danger: #EF4444;
+    --status-neutral: #64748B;
+
+    /* Legacy aliases */
     --color-dark-bg: #1F2A37;
     --color-dark-surface: #111827;
+  }
+
+  /* App-wide dotted-grid background texture (dark mode) */
+  .dark body,
+  body {
+    background-image: radial-gradient(circle, rgba(148, 163, 184, 0.07) 1px, transparent 1px);
+    background-size: 22px 22px;
+    background-attachment: fixed;
+  }
+
+  /* Lighter dotted grid in light mode */
+  html:not(.dark) body {
+    background-image: radial-gradient(circle, rgba(100, 116, 139, 0.10) 1px, transparent 1px);
+    background-size: 22px 22px;
+    background-attachment: fixed;
   }
 
   /* Dark mode (default) */

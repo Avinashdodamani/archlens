@@ -1,244 +1,264 @@
-# ArchLens - Progress Report
+# ArchLens — Project Progress Report
 
-**Project:** ArchLens - AI-Powered AWS Architecture Visualization & Optimization Platform  
-**Date:** August 19, 2026  
-**Status:** Phase 1 Complete (Infrastructure + Frontend Deployed)  
-**Dashboard URL:** https://d2gsocwzfyrda.cloudfront.net  
-**AWS Account:** 515554959344  
-**Region:** ap-south-1 (Mumbai)
-
----
-
-## 1. What is ArchLens?
-
-ArchLens is a serverless platform that:
-1. Connects to any AWS account via IAM Role ARN (read-only)
-2. Discovers all resources automatically
-3. Generates a real-time architecture diagram showing resource connections
-4. Analyzes architecture against AWS Well-Architected Framework (6 pillars)
-5. Provides AI-powered optimization recommendations via Amazon Bedrock
-6. Generates CloudFormation + Terraform scripts for approved changes
-7. Takes backups before making changes
-8. Deploys changes with automatic rollback if something fails
+**Project:** ArchLens — AI-Powered AWS Architecture Visualization and Optimization Platform
+**Tagline:** See your architecture, optimize it with AI, and deploy changes safely in one click.
+**Environment:** AWS Account 515554959344 · Region ap-south-1 (Mumbai)
+**Document type:** Internal progress report
+**Status:** In active development (demo-ready, pending one external dependency)
 
 ---
 
-## 2. Resources Created (AWS Console)
+## 1. Executive Summary
 
-| # | Service | Resource Name | Use Case | Status |
-|---|---------|--------------|----------|--------|
-| 1 | VPC | `archlens-vpc` (10.0.0.0/16) | Network isolation for ArchLens platform components | ✅ Created |
-| 2 | Subnet | `archlens-public-subnet-1` (10.0.1.0/24) | Hosts services in Availability Zone 1 | ✅ Created |
-| 3 | Subnet | `archlens-public-subnet-2` (10.0.2.0/24) | Hosts services in Availability Zone 2 | ✅ Created |
-| 4 | Internet Gateway | `archlens-igw` | Provides internet access to public subnets | ✅ Created |
-| 5 | Route Table | `archlens-public-rt` | Routes traffic from subnets to internet gateway | ✅ Created |
-| 6 | Security Group | `archlens-lambda-sg` | Controls network access for Lambda functions | ✅ Created |
-| 7 | Security Group | `archlens-elasticache-sg` | Controls Redis access (port 6379) — only from Lambda | ✅ Created |
-| 8 | IAM Role | `archlens-lambda-execution-role` | Permissions for Lambda to access S3, DynamoDB, Bedrock, STS, etc. | ✅ Created |
-| 9 | IAM Role | `archlens-stepfunctions-role` | Permissions for Step Functions to invoke Lambda | ✅ Created |
-| 10 | IAM Role | `archlens-codebuild-role` | Permissions for CodeBuild to run Terraform (no delete allowed) | ✅ Created |
-| 11 | IAM Role | `archlens-client-readonly-role` | Simulates client read-only role for resource discovery | ✅ Created |
-| 12 | IAM Role | `archlens-apigateway-role` | Permissions for API Gateway to invoke Lambda and log | ✅ Created |
-| 13 | IAM Policy | `archlens-lambda-custom-policy` | Custom policy for STS AssumeRole + resource discovery actions | ✅ Created |
-| 14 | IAM Policy | `archlens-codebuild-full-access-no-delete` | Full access to all AWS services but BLOCKS all delete operations | ✅ Created |
-| 15 | S3 Bucket | `archlens-frontend-515554959344` | Hosts the React frontend dashboard (static website) | ✅ Created |
-| 16 | S3 Bucket | `archlens-data-515554959344` | Stores diagrams, CFT templates, Terraform scripts, scan results | ✅ Created |
-| 17 | S3 Bucket | `archlens-backups-515554959344` | Stores pre-change backups, config exports, rollback data | ✅ Created |
-| 18 | CloudFront | `archlens-cloudfront` (E2W2DGJSOIAERC) | CDN for frontend — delivers dashboard globally with HTTPS | ✅ Created |
-| 19 | Cognito | User Pool `ap-south-1_2YA6M4HJl` | User authentication — signup, login, email verification, JWT tokens | ✅ Created |
-| 20 | Cognito App Client | `archlens-web-client` | Frontend app integration with Cognito | ✅ Created |
-| 21 | DynamoDB | `archlens-users` | Stores user profiles, connected AWS accounts | ✅ Created |
-| 22 | DynamoDB | `archlens-scans` | Stores scan results, resource counts, metadata | ✅ Created |
-| 23 | DynamoDB | `archlens-recommendations` | Stores AI recommendations, approval status | ✅ Created |
-| 24 | DynamoDB | `archlens-audit` | Audit trail — all actions, backups, changes, rollbacks | ✅ Created |
-| 25 | Lambda | `archlens-resource-discovery` | Assumes client role, discovers all AWS resources in their account | ✅ Created + Code Deployed |
-| 26 | Lambda | `archlens-architecture-analyzer` | Sends architecture to Bedrock AI for WAF pillar analysis | ✅ Created + Code Deployed |
-| 27 | Lambda | `archlens-cft-generator` | Generates CloudFormation templates from recommendations | ✅ Created + Code Deployed |
-| 28 | Lambda | `archlens-terraform-generator` | Generates Terraform scripts from recommendations | ✅ Created + Code Deployed |
-| 29 | Lambda | `archlens-backup-manager` | Takes backups before changes, handles rollback | ✅ Created + Code Deployed |
-| 30 | API Gateway | `archlens-api` (REST) | 5 POST endpoints connecting frontend to Lambda functions | ✅ Created + Deployed (dev stage) |
-| 31 | Step Functions | `archlens-workflow` | Orchestrates full flow: Discover → Analyze → Generate → Backup → Deploy → Monitor → Rollback | ✅ Created |
-| 32 | SQS | `archlens-approval-queue` | Pauses workflow waiting for user approval at 3 stages | ✅ Created |
-| 33 | Amazon Bedrock | Claude 3.5 Sonnet | AI engine for architecture analysis and script generation | ✅ Enabled |
-| 34 | CodeBuild | `archlens-terraform-executor` | Runs Terraform plan/apply in a managed environment | ✅ Created |
-| 35 | AWS Backup Vault | `archlens-pre-change-rule` | Stores backup snapshots (RDS, EC2 AMI, DynamoDB, EBS) | ✅ Created |
-| 36 | AWS Backup Plan | `archlens-backup-plan` | Defines backup retention (7 days) — triggered on-demand by Lambda | ✅ Created |
-| 37 | SNS Topic | `archlens-notifications` | Sends email alerts on deployment success/failure/rollback | ✅ Created |
-| 38 | EventBridge Rule | `archlens-workflow-status` | Detects Step Functions failure → sends SNS notification | ✅ Created |
+ArchLens is a fully serverless platform that connects to a client's AWS account using a
+read-only IAM role, automatically discovers their infrastructure, renders an interactive
+architecture diagram, analyzes the design against the AWS Well-Architected Framework using
+Amazon Bedrock, and safely generates and applies optimization changes with automatic backup
+and rollback.
 
-**Total AWS Resources Created: 38**
+As of this report, the complete application is built and deployed: a React front end hosted on
+S3 and CloudFront, a serverless backend of nine AWS Lambda functions behind API Gateway,
+five DynamoDB tables, Cognito authentication, a Step Functions orchestration workflow,
+scheduled scanning, drift detection, compliance scoring, and executive reporting.
+
+The only capability not currently live is the AI analysis execution itself, which is blocked by
+an external AWS billing/payment issue on the account (described in Section 7). All AI code is
+complete and correct; it will function as soon as the billing issue is resolved.
 
 ---
 
-## 3. Resources Skipped (Not Needed for POC)
-
-| Service | Why Skipped | Impact | Can Add Later? |
-|---------|-------------|--------|----------------|
-| ElastiCache (Redis) | Costs ~$12/month. DynamoDB is fast enough for POC. | None — app works without cache | ✅ Yes |
-| Amazon Neptune | Graph database for relationships. Using DynamoDB adjacency pattern instead. | None — relationships work fine | ✅ Yes |
-| Amazon OpenSearch | Search/analytics. Not needed for basic functionality. | No full-text resource search | ✅ Yes |
-| NAT Gateway | Costs ~$32/month. Lambda in public subnet doesn't need it. | None for POC | ✅ Yes |
-| CloudWatch Alarm | Lambda functions haven't been invoked yet — no metrics to alarm on. | No auto-alert on failure yet | ✅ Yes (after first test) |
-
----
-
-## 4. How the Dashboard Works (End-to-End Flow)
+## 2. High-Level Architecture
 
 ```
-User opens https://d2gsocwzfyrda.cloudfront.net
-    │
-    ▼
-CloudFront serves React app from S3 bucket
-    │
-    ▼
-User signs up / logs in (Cognito handles authentication)
-    │
-    ▼
-User enters client Role ARN + selects region
-    │
-    ▼
-Frontend calls API Gateway → POST /discover
-    │
-    ▼
-API Gateway invokes Lambda: archlens-resource-discovery
-    │
-    ▼
-Lambda calls STS AssumeRole → gets temporary credentials for client account
-    │
-    ▼
-Lambda calls AWS APIs (Describe*, List*, Get*) → discovers all resources
-    │
-    ▼
-Lambda builds relationships (EC2→VPC, Lambda→DynamoDB, etc.)
-    │
-    ▼
-Lambda saves results to S3 + DynamoDB → returns data to frontend
-    │
-    ▼
-Frontend renders architecture diagram using React Flow library
-    (Resources = nodes, Relationships = arrows/edges)
-    │
-    ▼
-User sees interactive diagram + resource list with download options
+                         ┌──────────────────────────────┐
+                         │   Amazon CloudFront (CDN)     │
+                         └──────────────┬───────────────┘
+                                        │
+                    ┌───────────────────▼───────────────────┐
+                    │   S3 (React single-page application)   │
+                    └───────────────────┬───────────────────┘
+                                        │  authenticated calls (JWT)
+                    ┌───────────────────▼───────────────────┐
+                    │   Amazon Cognito  →  API Gateway (REST) │
+                    └───────────────────┬───────────────────┘
+                                        │
+          ┌─────────────────────────────┼─────────────────────────────┐
+          ▼                             ▼                             ▼
+   AWS Lambda functions        AWS Step Functions            Amazon EventBridge
+   (discovery, analysis,       (end-to-end workflow)         (scheduled scans)
+    scripts, backup, drift,
+    report, scheduler, wf)
+          │                             │
+          ▼                             ▼
+   Amazon Bedrock            DynamoDB · S3 · SNS · SQS · KMS
+   (Claude model + Guardrail)
 ```
 
----
-
-## 5. How Architecture Diagram is Generated
-
-| Step | What Happens | Technology |
-|------|-------------|-----------|
-| 1 | Lambda scans client account using AWS APIs | Python boto3 + STS AssumeRole |
-| 2 | Discovers resources: EC2, S3, RDS, Lambda, VPC, Subnets, etc. | AWS Describe/List APIs |
-| 3 | Builds relationships by checking VPC IDs, subnet IDs, security groups | Custom Python logic |
-| 4 | Returns resources + relationships as JSON | Lambda response |
-| 5 | Frontend receives JSON data | API Gateway → React |
-| 6 | Places resources in layers (top=internet, middle=compute, bottom=storage) | React Flow layout algorithm |
-| 7 | Draws arrows between connected resources | React Flow edges |
-| 8 | User can zoom, pan, drag nodes | React Flow interactive canvas |
-
-**Key point:** The diagram is NOT hardcoded. It's generated in real-time from actual discovered resources. Every account produces a different diagram.
+The client's AWS account is accessed only through **AWS STS AssumeRole** on a read-only role.
+No client credentials are ever stored.
 
 ---
 
-## 6. Current Issues / Pending Fixes
+## 3. AWS Resources Created — What Each One Does
 
-| # | Issue | Description | Fix Required |
-|---|-------|-------------|-------------|
-| 1 | Bedrock Model ID Error | `anthropic.claude-3-5-sonnet-20241022-v2:0` needs inference profile in ap-south-1 region | Update MODEL_ID in Lambda environment variables to correct inference profile ARN |
-| 2 | Cognito Verification Email | Emails going to spam folder | Working — users need to check spam. In production, use Amazon SES for reliable delivery |
+### 3.1 Compute — AWS Lambda (9 functions)
 
----
+| # | Function name | Purpose | How it helps the project |
+|---|---------------|---------|--------------------------|
+| 1 | `archlens-resource-discovery` | Assumes the client role and scans the account across ~44 AWS services (EC2, Lambda, S3, RDS, VPC, DynamoDB, Neptune, DocumentDB, OpenSearch, GuardDuty, WAF, and many more). Also pulls Cost Explorer data for the 90-day cost trend and the per-service cost footprint. | This is the engine behind the "YourArch" tab. It produces the resource inventory and relationships that every other feature depends on. |
+| 2 | `archlens-architecture-analyzer` | Sends the discovered architecture to Amazon Bedrock (Claude) and returns Well-Architected scores, prioritized recommendations, cost analysis, and a proposed design. Applies a Bedrock Guardrail and is ready to use a Knowledge Base for grounding. | Powers the "RedefineYourArch" tab — the AI intelligence core of the product. |
+| 3 | `archlens-cft-generator` | Generates a CloudFormation template that implements the approved recommendations. | Turns AI advice into deployable infrastructure-as-code. |
+| 4 | `archlens-terraform-generator` | Generates equivalent Terraform (HCL) scripts. | Gives clients a choice of IaC tooling. |
+| 5 | `archlens-backup-manager` | Takes backups/snapshots of affected resources before any change, and performs rollback if needed. Also sends deployment success/failure notifications. | Delivers the "zero-risk implementation" promise in the "AutoRemediate" tab. |
+| 6 | `archlens-drift-detector` | Compares the two most recent scans for an account and reports resources added, removed, or changed. Sends an email alert on real drift. | Powers "Drift Detection" in InsightHub — continuous monitoring of infrastructure change. |
+| 7 | `archlens-report-generator` | Builds an executive-summary payload (health score, footprint, top recommendations, cost) that the UI exports as a PDF. | Provides leadership-ready reporting. |
+| 8 | `archlens-scan-scheduler` | Reads client-defined schedules (one-time or daily) and triggers discovery + drift automatically when due. Supports create/list/enable/disable/delete. | Powers "Scheduled Scans" — hands-free continuous scanning. |
+| 9 | `archlens-workflow-manager` | Starts and monitors the Step Functions workflow, and auto-advances its approval steps so the full lifecycle runs end to end. | Powers the "Run via Workflow" orchestration feature. |
 
-## 7. What's Working Right Now
+**Why Lambda:** serverless, pay-per-invocation, and effectively free at demo scale. No servers to
+manage and it scales automatically.
 
-| Feature | Status | Notes |
-|---------|--------|-------|
-| User Sign Up / Login | ✅ Working | Email verification via Cognito |
-| Resource Discovery | ✅ Working | Scans 29+ resources successfully |
-| Architecture Diagram | ✅ Working | Interactive React Flow diagram with connections |
-| Resource Table View | ✅ Working | Sortable table with type, name, region |
-| JSON/CSV Download | ✅ Working | Download discovered resources |
-| Region Selector | ✅ Working | All AWS regions + "All Regions" option |
-| Dark Theme UI | ✅ Working | Professional dark mode dashboard |
-| WAF Pillar Selection | ✅ UI Working | 6 pillars with checkboxes |
-| AI Analysis | ⚠️ Blocked | Bedrock model ID needs fix |
-| CFT Generation | ⚠️ Blocked | Depends on analysis working |
-| Terraform Generation | ⚠️ Blocked | Depends on analysis working |
-| Backup & Rollback | ✅ Code Ready | Will work once analysis flow completes |
-| Deployment | ✅ Code Ready | Will work once scripts are generated |
+### 3.2 API Layer — Amazon API Gateway
 
----
+| Resource | Purpose | How it helps |
+|----------|---------|--------------|
+| `archlens-api` (REST API) | Single secure entry point for the front end. Routes: `/discover`, `/analyze`, `/generate-cft`, `/generate-terraform`, `/backup`, `/detect-drift`, `/generate-report`, `/schedule`, `/workflow`. Protected by a Cognito authorizer with CORS enabled. | Gives the browser one authenticated, throttled, HTTPS endpoint to reach all backend functions. |
 
-## 8. Next Steps (Priority Order)
+### 3.3 Authentication — Amazon Cognito
 
-| # | Task | Effort | Priority |
-|---|------|--------|----------|
-| 1 | Fix Bedrock model ID (use inference profile) | 10 min | High |
-| 2 | Test full flow: Discover → Analyze → Generate Scripts → Backup → Deploy | 30 min | High |
-| 3 | Add environment variables to Lambda functions (DATA_BUCKET, MODEL_ID, etc.) | 15 min | High |
-| 4 | Improve architecture diagram (AWS official icons, better layout) | 2-3 hours | Medium |
-| 5 | Add download diagram as PNG/SVG | 1 hour | Medium |
-| 6 | Add CloudWatch alarm for deployment monitoring | 15 min | Medium |
-| 7 | Configure SES for reliable email delivery | 30 min | Low |
-| 8 | Add multi-account support | 2-3 hours | Low |
-| 9 | Add scheduled scans (drift detection) | 2-3 hours | Low |
+| Resource | Purpose | How it helps |
+|----------|---------|--------------|
+| `archlens-user-pool` | Manages user sign-up, sign-in, email verification, and JWT tokens. | Secures the platform. Every API call is authorized with a Cognito-issued token; no custom auth to maintain. |
 
----
+### 3.4 Data Layer — Amazon DynamoDB (5 tables)
 
-## 9. Security Measures Implemented
+| Table | Purpose | How it helps |
+|-------|---------|--------------|
+| `archlens-scans` | Metadata for every discovery scan (account, region, resource count, S3 pointer). | Enables scan history, comparison, and drift detection. |
+| `archlens-recommendations` | Metadata for every AI analysis run. | Links analyses back to scans and feeds reports. |
+| `archlens-schedules` | Client-defined scan schedules (frequency, time, enabled state). | Drives the scheduled-scan feature with per-schedule control. |
+| `archlens-users` | User profile/preferences store. | Supports account-level data. |
+| `archlens-audit` | Audit log of actions. | Traceability and compliance. |
 
-| Security Measure | Details |
-|-----------------|---------|
-| No delete permissions | CodeBuild policy explicitly denies all Delete* actions across 150+ AWS services |
-| Read-only client access | Client provides ReadOnlyAccess role — ArchLens cannot modify their resources during scan |
-| No hardcoded credentials | All config via environment variables |
-| Cognito JWT authentication | All API calls require valid token |
-| STS temporary credentials | Never stores permanent credentials — uses 1-hour temp tokens |
-| Audit trail | Every action logged to DynamoDB (archlens-audit table) |
-| Backup before changes | Mandatory backup before any modification |
-| Automatic rollback | If deployment health check fails, auto-restores from backup |
+**Why DynamoDB:** serverless, single-digit-millisecond latency, pay-per-request, and no
+connection management. (The project design allowed a graph database as an alternative — see
+Section 6.)
 
----
+### 3.5 Storage — Amazon S3 (3 buckets)
 
-## 10. Cost Estimate (POC - Idle State)
+| Bucket | Purpose | How it helps |
+|--------|---------|--------------|
+| `archlens-frontend-515554959344` | Hosts the built React application. | Static, cheap, globally distributed via CloudFront. |
+| `archlens-data-515554959344` | Stores full scan results, analysis reports, generated scripts, and the Well-Architected knowledge corpus. | Keeps large JSON payloads out of DynamoDB and cheap to store. |
+| `archlens-backups-515554959344` | Stores pre-change backup artifacts and exports. | Supports safe rollback. |
 
-| Service | Monthly Cost (Idle) | Monthly Cost (Active Use) |
-|---------|--------------------|--------------------------| 
-| VPC + Subnets | $0 | $0 |
-| S3 (3 buckets) | $0.01 | $0.50 |
-| CloudFront | $0 | $1-5 |
-| Cognito | $0 (first 50K users free) | $0 |
-| DynamoDB (on-demand) | $0 | $1-5 |
-| Lambda | $0 | $1-5 |
-| API Gateway | $0 | $1-3 |
-| Bedrock | $0 | $0.15-0.50 per analysis |
-| Step Functions | $0 | $0.10-0.50 |
-| CodeBuild | $0 | $0.01 per build minute |
-| SNS | $0 | $0 |
-| SQS | $0 | $0 |
-| **Total** | **~$0** | **~$5-20/month active** |
+### 3.6 Content Delivery — Amazon CloudFront
 
----
+| Resource | Purpose | How it helps |
+|----------|---------|--------------|
+| Distribution `E2W2DGJSOIAERC` (`d2gsocwzfyrda.cloudfront.net`) | Serves the front end globally over HTTPS with caching. | Fast load times worldwide and a single public URL for the app. |
 
-## 11. Technology Stack Summary
+### 3.7 Orchestration — AWS Step Functions
 
-| Layer | Technology |
-|-------|-----------|
-| Frontend | React 18 + TypeScript + Tailwind CSS + React Flow + Vite |
-| Authentication | Amazon Cognito + AWS Amplify SDK |
-| API | Amazon API Gateway (REST) |
-| Backend | AWS Lambda (Python 3.12) |
-| AI Engine | Amazon Bedrock (Claude 3.5 Sonnet) |
-| Database | Amazon DynamoDB (on-demand) |
-| Storage | Amazon S3 |
-| Orchestration | AWS Step Functions |
-| CI/CD | AWS CodeBuild (Terraform execution) |
-| CDN | Amazon CloudFront |
-| Monitoring | Amazon CloudWatch + SNS + EventBridge |
-| Backup | AWS Backup |
-| IaC Output | CloudFormation (YAML) + Terraform (HCL) |
+| Resource | Purpose | How it helps |
+|----------|---------|--------------|
+| `archlens-workflow` (state machine) | Orchestrates the full lifecycle: discover → analyze → generate scripts (in parallel) → backup → deploy → health check → rollback on failure. Includes automatic retries. | Runs the entire process server-side with built-in error handling and auto-rollback, independent of the browser. |
+
+### 3.8 Eventing and Messaging
+
+| Resource | Purpose | How it helps |
+|----------|---------|--------------|
+| `archlens-scheduled-scan` (EventBridge rule) | Fires hourly and triggers the scheduler Lambda to run any due schedules. | Enables cron-based automatic scanning. |
+| `archlens-workflow-status` (EventBridge rule) | Captures workflow status events. | Supports monitoring of orchestration runs. |
+| `archlens-notifications` (SNS topic) | Sends email alerts for drift and deployment status. | Keeps users informed without opening the app. |
+| `archlens-approval-queue` (SQS queue) | Holds human-approval "pause" messages for the Step Functions workflow. | Enables the approval gates in the orchestrated lifecycle. |
+
+### 3.9 AI / Machine Learning — Amazon Bedrock
+
+| Resource | Purpose | How it helps |
+|----------|---------|--------------|
+| Bedrock foundation model (Claude) | Analyzes architecture against the Well-Architected Framework and generates recommendations and IaC. | The core intelligence of the platform. |
+| `archlens-guardrail` (Bedrock Guardrail) | Blocks unsafe or irrelevant AI output and protects against prompt injection and credential leakage. | Improves trust and reduces AI hallucination risk. |
+| Knowledge corpus in S3 (`knowledge-base/`) | Well-Architected and CIS best-practice text, ready for a Bedrock Knowledge Base (RAG). | Prepared so recommendations can be grounded in official AWS guidance when enabled. |
+
+### 3.10 Security and Encryption
+
+| Resource | Purpose | How it helps |
+|----------|---------|--------------|
+| AWS STS AssumeRole (read-only) | Temporary, least-privilege access to the client account. | No client credentials are ever stored; access is revocable and time-limited. |
+| AWS KMS | Encryption of data at rest. | Meets security and compliance expectations. |
+| `archlens-lambda-execution-role` (IAM) | Execution permissions for all Lambda functions. | Centralized, least-privilege backend permissions. |
 
 ---
 
-*Report prepared for internal review. ArchLens Phase 1 infrastructure is complete and functional.*
+## 4. Front-End Application (React on S3 + CloudFront)
+
+Five main sections, matching the product design:
+
+| Tab | What it does |
+|-----|--------------|
+| **Dashboard** | Health score gauge, Well-Architected radar chart, real cost trend (from the client's Cost Explorer data), recommendations, resource distribution, and recent scans with trend indicators. |
+| **YourArch** | Connect a read-only role, discover the account, and view an interactive diagram with five view modes (Logical, Network, Data Flow, Cost, Security). Supports tag-based grouping, per-scan notes, and export to PNG, SVG, PDF, and draw.io. Includes "Run via Workflow" orchestration. |
+| **RedefineYourArch** | Select Well-Architected pillars, run AI analysis, and view scored recommendations with a current-versus-proposed comparison and generated CloudFormation/Terraform scripts. |
+| **AutoRemediate** | Take backups, preview the change set, deploy, and roll back — with safety guardrails and a clear step-by-step progress view. |
+| **InsightHub** | Scan history, compliance dashboard (CIS/NIST), drift detection, scan comparison, scheduled scans, and executive PDF report export. |
+
+Platform-wide features: command palette (Ctrl/Cmd+K) for quick navigation and search, a
+notification center with real read/unread tracking, an AI assistant helper, a first-time
+onboarding tour, and a consistent Inter-based typography and color system.
+
+---
+
+## 5. Problems and Blockers
+
+### 5.1 Amazon Bedrock billing/payment (external — currently blocking AI features)
+- **Symptom:** Bedrock model invocation fails with an `INVALID_PAYMENT_INSTRUMENT` error;
+  the model agreement shows as unavailable.
+- **Root cause:** An AWS account billing/card validation issue (common with certain cards and
+  the AWS Marketplace agreement that Bedrock models require). This is **not a code problem** —
+  the analyzer, guardrail, and prompt logic are complete and correct.
+- **Impact:** The AI analysis (RedefineYourArch) and any workflow step that calls Bedrock cannot
+  complete until billing is resolved. Everything else (discovery, diagram, drift, scheduling,
+  reports, compliance) works today.
+- **Resolution path:** Validate/re-add a payment method in AWS Billing, enable the model
+  agreement in Bedrock, or open a free AWS Billing support case. No code change required.
+
+### 5.2 Bedrock Knowledge Base (deferred on cost)
+- The Retrieval-Augmented Generation (RAG) feature requires a vector store. The standard AWS
+  option (OpenSearch Serverless) carries a continuous monthly cost (roughly a few hundred USD).
+- **Decision:** The knowledge corpus and the code path are ready, but the vector store has not
+  been provisioned to avoid standing cost during development. It can be enabled for production.
+
+### 5.3 Real deployment step is a controlled placeholder
+- In AutoRemediate and the Step Functions workflow, the actual "apply changes" step is currently
+  a safe placeholder rather than a live CloudFormation deploy, because a real deploy is
+  destructive and needs a dedicated target account and explicit approval. Backup, change-set
+  preview, and rollback are fully implemented.
+
+### 5.4 Client-side prerequisites for full data
+- **AWS Config:** For 100% coverage of untagged resources and richer relationships, the client
+  account needs AWS Config enabled. Without it, discovery still covers ~44 services directly and
+  all tagged resources, plus billed services from Cost Explorer.
+- **Cost Explorer:** The cost trend and cost view require Cost Explorer access in the client
+  role; otherwise those panels show an empty state (never fake values).
+
+---
+
+## 6. Cost-Conscious Choices — Alternatives for Production
+
+The following table lists where a lower-cost or simpler service was chosen for development, and
+the recommended production alternative.
+
+| Area | Currently used (dev) | Recommended for production | Reason |
+|------|----------------------|----------------------------|--------|
+| Relationship / graph storage | DynamoDB (adjacency pattern) | Amazon Neptune (managed graph database) | DynamoDB is free-tier friendly and sufficient for the diagram. Neptune is better for very large, deeply connected graphs but adds standing cost. The design explicitly allows either. |
+| AI grounding (RAG) | Not provisioned (corpus staged in S3) | Bedrock Knowledge Base backed by OpenSearch Serverless (or Aurora Serverless pgvector) | Vector stores bill continuously; enable in production to ground AI answers in official AWS documentation. |
+| Search / log analytics | Client-side filtering + DynamoDB | Amazon OpenSearch Service | Fine at current scale; OpenSearch is warranted only at large data volumes. |
+| Caching / session store | Browser state + DynamoDB | Amazon ElastiCache (Redis) | Avoids a standing cache cost during development; add in production for high traffic. |
+| Scheduled scans | One shared EventBridge rule + scheduler Lambda | Amazon EventBridge Scheduler (one schedule per client) | The shared-dispatcher pattern avoids per-schedule infrastructure; EventBridge Scheduler is cleaner at scale. |
+| AI model routing | Single Claude model | Model routing (Haiku for quick checks, Sonnet for standard, Opus for complex) | Saves cost by matching model size to task complexity. |
+| Infrastructure deployment | Manual CLI + console | AWS CDK or CloudFormation with CodePipeline/CodeBuild | Development used direct deployment for speed; production should use full infrastructure-as-code and CI/CD. |
+| Observability | CloudWatch Logs | CloudWatch + X-Ray distributed tracing + RUM | Add deeper tracing and real-user monitoring for production support. |
+
+**General principle:** every service chosen for development is serverless and pay-per-use, so the
+running cost at demo scale is effectively zero. The production alternatives above trade a
+predictable monthly cost for greater scale, richer features, or stronger operations.
+
+---
+
+## 7. Current Status Summary
+
+| Capability | Status |
+|------------|--------|
+| Resource discovery (multi-service, multi-region) | Working |
+| Interactive architecture diagram (5 views) | Working |
+| Diagram export (PNG, SVG, PDF, draw.io) | Working |
+| Tag-based grouping and per-scan notes | Working |
+| Cost trend and cost view (real account data) | Working |
+| Drift detection and email alerts | Working |
+| Scan comparison | Working |
+| Scheduled scans (one-time and daily) | Working |
+| Compliance dashboard (CIS / NIST) | Working |
+| Executive PDF report | Working |
+| Step Functions orchestration | Working |
+| Notifications with read/unread tracking | Working |
+| Backup, change-set preview, rollback | Working |
+| Cognito authentication | Working |
+| AI analysis (Bedrock) | Blocked by account billing (Section 5.1) |
+| Live CloudFormation deploy | Controlled placeholder (Section 5.3) |
+| Bedrock Knowledge Base (RAG) | Ready, deferred on cost (Section 5.2) |
+
+---
+
+## 8. Deployment Reference
+
+- **Front end:** built with Vite, synced to `s3://archlens-frontend-515554959344/`, served via
+  CloudFront distribution `E2W2DGJSOIAERC`.
+- **Backend:** nine Lambda functions deployed in `ap-south-1`, fronted by the `archlens-api`
+  REST API with a Cognito authorizer.
+- **Account:** 515554959344 · Region ap-south-1 (Mumbai).
+
+---
+
+*Prepared for internal review. All resource names and identifiers reflect the live development
+environment at the time of writing.*

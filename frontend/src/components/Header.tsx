@@ -1,9 +1,11 @@
 import { signOut } from 'aws-amplify/auth';
 import { useAppStore } from '../store/useAppStore';
+import NotificationCenter from './NotificationCenter';
 import {
   SunIcon,
   MoonIcon,
   ArrowRightOnRectangleIcon,
+  MagnifyingGlassIcon,
 } from '@heroicons/react/24/outline';
 
 export default function Header() {
@@ -80,6 +82,23 @@ export default function Header() {
 
       {/* Right - Actions */}
       <div className="flex items-center gap-2">
+        {/* Command palette hint (Cmd/Ctrl+K) */}
+        <button
+          onClick={() => {
+            const evt = new KeyboardEvent('keydown', { key: 'k', metaKey: true, ctrlKey: true, bubbles: true });
+            window.dispatchEvent(evt);
+          }}
+          className="hidden md:flex items-center gap-2 px-2.5 py-1.5 text-gray-400 hover:text-white rounded-lg hover:bg-dark-800 border border-dark-700/50 transition-all"
+          title="Search (Ctrl/Cmd + K)"
+        >
+          <MagnifyingGlassIcon className="w-4 h-4" />
+          <span className="text-xs">Search</span>
+          <kbd className="text-[10px] text-gray-500 bg-dark-900 px-1.5 py-0.5 rounded">⌘K</kbd>
+        </button>
+
+        {/* Notifications */}
+        <NotificationCenter />
+
         {/* Dark/Light Mode */}
         <button
           onClick={toggleDarkMode}
