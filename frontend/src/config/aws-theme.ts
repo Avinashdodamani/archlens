@@ -174,6 +174,38 @@ export const AWS_GROUP_STYLES_DARK: Record<string, GroupStyle> = {
     labelColor: AWS_COLOR_MARS,
     label: 'Security group',
   },
+  TierIngress: {
+    borderColor: AWS_COLOR_COSMOS,
+    borderStyle: 'dashed',
+    borderWidth: 1,
+    backgroundColor: 'rgba(231, 21, 123, 0.05)',
+    labelColor: AWS_COLOR_COSMOS,
+    label: 'Ingress & API Management Tier',
+  },
+  TierCompute: {
+    borderColor: AWS_COLOR_SMILE,
+    borderStyle: 'dashed',
+    borderWidth: 1,
+    backgroundColor: 'rgba(237, 113, 0, 0.05)',
+    labelColor: AWS_COLOR_SMILE,
+    label: 'Serverless Compute & Orchestration Tier',
+  },
+  TierDatabase: {
+    borderColor: AWS_COLOR_NEBULA,
+    borderStyle: 'dashed',
+    borderWidth: 1,
+    backgroundColor: 'rgba(201, 37, 209, 0.05)',
+    labelColor: AWS_COLOR_NEBULA,
+    label: 'Database & Storage Layer',
+  },
+  TierMessaging: {
+    borderColor: AWS_COLOR_COSMOS,
+    borderStyle: 'dashed',
+    borderWidth: 1,
+    backgroundColor: 'rgba(231, 21, 123, 0.05)',
+    labelColor: AWS_COLOR_COSMOS,
+    label: 'Messaging & Event Integration',
+  },
 };
 
 /** Light theme group styles — extracted from Light-BG PPT */
@@ -233,6 +265,38 @@ export const AWS_GROUP_STYLES_LIGHT: Record<string, GroupStyle> = {
     backgroundColor: 'rgba(221, 52, 76, 0.04)',
     labelColor: AWS_COLOR_MARS,
     label: 'Security group',
+  },
+  TierIngress: {
+    borderColor: AWS_COLOR_COSMOS,
+    borderStyle: 'dashed',
+    borderWidth: 1,
+    backgroundColor: 'rgba(231, 21, 123, 0.03)',
+    labelColor: AWS_COLOR_COSMOS,
+    label: 'Ingress & API Management Tier',
+  },
+  TierCompute: {
+    borderColor: AWS_COLOR_SMILE,
+    borderStyle: 'dashed',
+    borderWidth: 1,
+    backgroundColor: 'rgba(237, 113, 0, 0.03)',
+    labelColor: AWS_COLOR_SMILE,
+    label: 'Serverless Compute & Orchestration Tier',
+  },
+  TierDatabase: {
+    borderColor: AWS_COLOR_NEBULA,
+    borderStyle: 'dashed',
+    borderWidth: 1,
+    backgroundColor: 'rgba(201, 37, 209, 0.03)',
+    labelColor: AWS_COLOR_NEBULA,
+    label: 'Database & Storage Layer',
+  },
+  TierMessaging: {
+    borderColor: AWS_COLOR_COSMOS,
+    borderStyle: 'dashed',
+    borderWidth: 1,
+    backgroundColor: 'rgba(231, 21, 123, 0.03)',
+    labelColor: AWS_COLOR_COSMOS,
+    label: 'Messaging & Event Integration',
   },
 };
 

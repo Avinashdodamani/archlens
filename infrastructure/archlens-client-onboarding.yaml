@@ -1,0 +1,45 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: 'ArchLens - Read-Only Cross-Account Role for Architecture Discovery & Visualization'
+
+Parameters:
+  ArchLensAccountId:
+    Type: String
+    Default: '515554959344'
+    Description: 'AWS Account ID of the ArchLens platform'
+
+  ExternalId:
+    Type: String
+    Default: ''
+    Description: 'Optional External ID for confused-deputy protection'
+
+Conditions:
+  HasExternalId: !Not [!Equals [!Ref ExternalId, '']]
+
+Resources:
+  ArchLensClientRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: ArchLens-Client-Scan-Role
+      Description: 'Allows ArchLens to discover and visualize architecture in this account (read-only)'
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              AWS:
+                - !Sub 'arn:aws:iam::\:role/archlens-lambda-execution-role'
+                - !Sub 'arn:aws:iam::\:root'
+            Action: 'sts:AssumeRole'
+            Condition: !If
+              - HasExternalId
+              - StringEquals:
+                  sts:ExternalId: !Ref ExternalId
+              - !Ref 'AWS::NoValue'
+      ManagedPolicyArns:
+        - 'arn:aws:iam::aws:policy/SecurityAudit'
+        - 'arn:aws:iam::aws:policy/ReadOnlyAccess'
+
+Outputs:
+  RoleArn:
+    Description: 'The Role ARN to enter in the ArchLens dashboard'
+    Value: !GetAtt ArchLensClientRole.Arn

@@ -48,9 +48,10 @@ def _resp(status, payload):
 def start_execution(body):
     """Start a new workflow execution with the discovery inputs.
 
-    Supports an optional `pillars` list; the human-approval pauses are then
-    auto-advanced by the poller/auto-resume so the orchestration runs
-    end-to-end and produces a visible result for the demo.
+    The workflow PAUSES at every human-approval gate (pillar selection,
+    recommendation review, script review, backup review, deploy approval).
+    Nothing proceeds automatically — each stage requires an explicit
+    approval via the "resume" action. autoApprove is always False.
     """
     execution_input = {
         'roleArn': body.get('roleArn'),
@@ -62,7 +63,8 @@ def start_execution(body):
             'operational_excellence', 'security', 'reliability',
             'performance_efficiency', 'cost_optimization', 'sustainability',
         ],
-        'autoApprove': bool(body.get('autoApprove', True)),
+        # Manual approval is mandatory — never auto-approve any stage.
+        'autoApprove': False,
     }
     if not execution_input['roleArn'] or not execution_input['region']:
         return _resp(400, {'error': 'roleArn and region are required'})
@@ -75,7 +77,7 @@ def start_execution(body):
         'executionArn': resp['executionArn'],
         'startDate': resp['startDate'],
         'status': 'RUNNING',
-        'message': 'Workflow started. It will discover resources, analyze against the Well-Architected Framework, and generate scripts.',
+        'message': 'Workflow started. It will pause for your approval at each stage — discovery, analysis, script review, backup, and deployment.',
     })
 
 
@@ -95,22 +97,15 @@ def get_status(body):
     if desc['status'] == 'SUCCEEDED' and desc.get('output'):
         result['output'] = json.loads(desc['output'])
 
-    # If paused for approval, a message with the task token is waiting in SQS.
-    # Auto-advance the pause so the orchestration runs to completion and
-    # returns a visible result (the pauses exist for optional human gates).
+    # If the workflow is paused for a human-approval gate, surface the pending
+    # step to the UI. We DO NOT auto-approve — every stage (pillar selection,
+    # recommendation review, script review, deploy approval) requires an
+    # explicit user decision via the "resume" action. This prevents any
+    # automatic change without manual approval, which is essential in production.
     pending = _peek_pending_approval()
     if pending and pending.get('taskToken'):
-        try:
-            sfn.send_task_success(
-                taskToken=pending['taskToken'],
-                output=json.dumps({'autoApproved': True}),
-            )
-            if pending.get('receiptHandle'):
-                sqs.delete_message(QueueUrl=APPROVAL_QUEUE_URL, ReceiptHandle=pending['receiptHandle'])
-            result['autoAdvanced'] = pending.get('message', 'Advanced approval step')
-        except ClientError as e:
-            logger.warning(f"Auto-resume failed: {e}")
-            result['pendingApproval'] = pending
+        result['pendingApproval'] = pending
+        result['awaitingApproval'] = True
 
     return _resp(200, result)
 

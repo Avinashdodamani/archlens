@@ -23,7 +23,8 @@ import {
   getDiagramBackground,
   getDiagramGridColor,
 } from '../config/aws-theme';
-import { getServiceIconPath } from '../config/aws-icon-map';
+import { getServiceIconPath, getGroupIconPath } from '../config/aws-icon-map';
+import { AWS_REGIONS } from '../config/aws-regions';
 
 // ─── Interfaces ──────────────────────────────────────────────────────────────
 
@@ -45,6 +46,7 @@ interface Resource {
   map_public_ip?: boolean;
   is_public?: boolean;
   subnet_tier?: string;
+  isRecommended?: boolean;
   [key: string]: unknown;
 }
 
@@ -60,36 +62,121 @@ interface ArchitectureDiagramProps {
   resources: Resource[];
   relationships: Relationship[];
   servicesFootprint?: { service: string; monthly_cost_usd: number }[];
+  viewMode?: DiagramViewMode;
 }
+
+// Custom group node to ensure boundary headers, icons, and titles render properly in ReactFlow
+const CustomGroupNode: React.FC<{ data: { label?: React.ReactNode } }> = ({ data }) => {
+  return (
+    <div style={{ width: '100%', height: '100%', position: 'relative', pointerEvents: 'none' }}>
+      {data?.label}
+    </div>
+  );
+};
 
 // ─── Constants ───────────────────────────────────────────────────────────────
 
-const NODE_WIDTH = 150;
-const NODE_HEIGHT = 90;
-// Vertical space reserved at the top of each boundary for its label.
-const LABEL_RESERVE = 28;
+const NODE_WIDTH = 165;
+const NODE_HEIGHT = 100;
+// Vertical space reserved at the top of each boundary for its label badge.
+const LABEL_RESERVE = 36;
 
-const INFRASTRUCTURE_TYPES = new Set([
+// Official AWS Service names for display in diagram nodes
+const AWS_SERVICE_NAMES: Record<string, string> = {
+  EC2: 'Amazon EC2',
+  Lambda: 'AWS Lambda',
+  S3: 'Amazon S3',
+  RDS: 'Amazon RDS',
+  Aurora: 'Amazon Aurora',
+  DynamoDB: 'Amazon DynamoDB',
+  VPC: 'Amazon VPC',
+  CloudFront: 'Amazon CloudFront',
+  ELB: 'Elastic Load Balancing',
+  APIGateway: 'Amazon API Gateway',
+  ECS: 'Amazon ECS',
+  EKS: 'Amazon EKS',
+  Route53: 'Amazon Route 53',
+  SNS: 'Amazon SNS',
+  SQS: 'Amazon SQS',
+  KMS: 'AWS KMS',
+  CloudWatch: 'Amazon CloudWatch',
+  IAM: 'AWS IAM',
+  Cognito: 'Amazon Cognito',
+  StepFunctions: 'AWS Step Functions',
+  Bedrock: 'Amazon Bedrock',
+  CodeBuild: 'AWS CodeBuild',
+  EventBridge: 'Amazon EventBridge',
+  ElastiCache: 'Amazon ElastiCache',
+  EFS: 'Amazon EFS',
+  EBS: 'Amazon EBS',
+  Redshift: 'Amazon Redshift',
+  Kinesis: 'Amazon Kinesis',
+  SageMaker: 'Amazon SageMaker',
+  Glue: 'AWS Glue',
+  Athena: 'Amazon Athena',
+  CloudTrail: 'AWS CloudTrail',
+  SecretsManager: 'AWS Secrets Manager',
+  AutoScaling: 'EC2 Auto Scaling',
+  SecurityGroup: 'Security Group',
+  Subnet: 'VPC Subnet',
+  InternetGateway: 'Internet Gateway',
+  NATGateway: 'NAT Gateway',
+  VPCEndpoint: 'VPC Endpoint',
+  OpenSearch: 'Amazon OpenSearch',
+  WAF: 'AWS WAF',
+  TransitGateway: 'AWS Transit Gateway',
+  SecurityHub: 'AWS Security Hub',
+};
+
+function getRegionDisplayName(code: string): string {
+  const match = AWS_REGIONS.find((r) => r.code === code);
+  return match ? match.name : code;
+}
+
+// Container/group types handled as boundary boxes, not leaf service nodes
+const INFRASTRUCTURE_CONTAINER_TYPES = new Set([
   'VPC',
   'Subnet',
   'SecurityGroup',
-  'InternetGateway',
-  'NATGateway',
 ]);
 
-// Types that are conceptually global / edge — never bound to a VPC.
-const GLOBAL_TYPES = new Set(['CloudFront', 'Route53', 'IAM', 'S3']);
+// Identity/plumbing/ops types that should NEVER appear as diagram nodes
+const NON_DIAGRAM_TYPES = new Set([
+  'IAM',
+  'IAMUser',
+  'IAMRole',
+  'ACMCertificate',
+  'Config',
+  'NetworkInterface',
+  'AMI',
+  'Snapshot',
+  'KeyPair',
+  'ElasticIP',
+  'DHCPOptions',
+  'NetworkACL',
+  'RouteTable',
+  'CloudFormation',
+  'CloudWatchLogs',
+  'LogGroup',
+  'SSMParameter',
+  'SSMDocument',
+  'CodeDeploy',
+  'Cassandra',
+  'AppConfig',
+  'Route53Resolver',
+  'ResourceExplorer2',
+  'Scheduler',
+  'Backup',
+  'BackupPlan',
+  'BackupVault',
+  'CodeBuild',
+]);
 
-const PUBLIC_FACING_TYPES = new Set(['Route53', 'CloudFront', 'APIGateway', 'ELB']);
+// Types that are conceptually global / edge — outside any specific AWS region
+const GLOBAL_TYPES = new Set(['CloudFront', 'Route53', 'IAM']);
 
-// Inferred connection rules: source_type → target_types
-const INFERRED_CONNECTIONS: Record<string, string[]> = {
-  APIGateway: ['Lambda'],
-  ELB: ['EC2', 'ECS'],
-  Lambda: ['DynamoDB', 'S3', 'RDS'],
-  CloudFront: ['S3', 'ELB'],
-  EC2: ['RDS'],
-};
+// Entry points where traffic ENTERS the account from the internet
+const PUBLIC_FACING_TYPES = new Set(['Route53', 'CloudFront', 'InternetGateway', 'APIGateway', 'ELB']);
 
 const INTERNET_ID = '__internet__';
 
@@ -112,7 +199,16 @@ const containerLayoutOptions = (): Record<string, string> => ({
   'elk.direction': 'DOWN',
   'elk.layered.spacing.nodeNodeBetweenLayers': '50',
   'elk.spacing.nodeNode': '40',
-  'elk.padding': `[top=${LABEL_RESERVE + 16},left=24,bottom=24,right=24]`,
+  'elk.padding': `[top=${LABEL_RESERVE + 22},left=26,bottom=24,right=26]`,
+});
+
+// Tier containers stack services side-by-side inside the tier
+const tierLayoutOptions = (): Record<string, string> => ({
+  'elk.algorithm': 'layered',
+  'elk.direction': 'RIGHT',
+  'elk.layered.spacing.nodeNodeBetweenLayers': '36',
+  'elk.spacing.nodeNode': '26',
+  'elk.padding': `[top=${LABEL_RESERVE + 20},left=22,bottom=20,right=22]`,
 });
 
 // AZ columns should sit side-by-side — lay their subnet bands out top-to-bottom
@@ -122,7 +218,7 @@ const azRowLayoutOptions = (): Record<string, string> => ({
   'elk.direction': 'DOWN',
   'elk.layered.spacing.nodeNodeBetweenLayers': '40',
   'elk.spacing.nodeNode': '30',
-  'elk.padding': `[top=${LABEL_RESERVE + 12},left=20,bottom=20,right=20]`,
+  'elk.padding': `[top=${LABEL_RESERVE + 18},left=22,bottom=22,right=22]`,
 });
 
 // ─── ELK graph types ─────────────────────────────────────────────────────────
@@ -217,60 +313,157 @@ function boundaryElkNode(
   };
 }
 
-/**
- * Group resources into the nested container hierarchy and return the ELK
- * children of the AWS Cloud container. Structure:
- *   AWS Cloud
- *   ├── global service row (leaf nodes)
- *   └── Region → VPC → (VPC-level leaves) + AZ → Subnet band → leaves
- */
 function buildCloudChildren(
   serviceResources: Resource[],
   ctx: GroupContext
 ): ElkNode[] {
   const cloudChildren: ElkNode[] = [];
 
-  // 1. Split global vs regional-with-vpc.
+  // 1. Separate true global services (Route53, CloudFront) vs regional services
   const globalResources: Resource[] = [];
   const regionalResources: Resource[] = [];
 
   for (const r of serviceResources) {
-    const isGlobal = GLOBAL_TYPES.has(r.type) || !r.region || !r.vpc_id;
+    const isGlobal = GLOBAL_TYPES.has(r.type) || r.region === 'global';
     if (isGlobal) globalResources.push(r);
     else regionalResources.push(r);
   }
 
-  // 2. Global service leaves live directly under AWS Cloud.
-  for (const r of globalResources) {
-    cloudChildren.push(serviceElkNode(r));
+  // 2. Global Edge services container
+  if (globalResources.length > 0) {
+    cloudChildren.push(
+      boundaryElkNode(
+        '__global_edge_tier__',
+        'AWSCloud',
+        'Global Edge & Content Delivery (Route 53 · CloudFront)',
+        globalResources.map(serviceElkNode),
+        tierLayoutOptions()
+      )
+    );
   }
 
-  // 3. Group regional resources by region → vpc.
+  // 3. Group regional resources by region
   const regionGroups = new Map<string, Resource[]>();
   for (const r of regionalResources) {
-    const region = r.region as string;
+    const region = (r.region as string) || 'default-region';
     if (!regionGroups.has(region)) regionGroups.set(region, []);
     regionGroups.get(region)!.push(r);
   }
 
   for (const [regionName, regionResources] of regionGroups.entries()) {
+    const regionChildren: ElkNode[] = [];
     const vpcGroups = new Map<string, Resource[]>();
-    for (const r of regionResources) {
-      const vpcId = r.vpc_id as string;
-      if (!vpcGroups.has(vpcId)) vpcGroups.set(vpcId, []);
-      vpcGroups.get(vpcId)!.push(r);
+    const regionalNonVpc: Resource[] = [];
+
+    // Ensure all discovered VPCs in this region from ctx.vpcMeta are tracked
+    for (const [vpcId, vpcRes] of ctx.vpcMeta.entries()) {
+      if ((vpcRes.region || 'default-region') === regionName || !vpcRes.region) {
+        if (!vpcGroups.has(vpcId)) vpcGroups.set(vpcId, []);
+      }
     }
 
-    const vpcContainers: ElkNode[] = [];
+    for (const r of regionResources) {
+      if (r.vpc_id) {
+        const vpcId = r.vpc_id as string;
+        if (!vpcGroups.has(vpcId)) vpcGroups.set(vpcId, []);
+        vpcGroups.get(vpcId)!.push(r);
+      } else {
+        regionalNonVpc.push(r);
+      }
+    }
 
+    // Categorize regional non-VPC resources into standard AWS architecture tiers
+    const ingressRes: Resource[] = [];
+    const computeRes: Resource[] = [];
+    const databaseRes: Resource[] = [];
+    const messagingRes: Resource[] = [];
+    const otherRes: Resource[] = [];
+
+    for (const r of regionalNonVpc) {
+      if (r.type === 'APIGateway' || r.type === 'Cognito') {
+        ingressRes.push(r);
+      } else if (r.type === 'Lambda' || r.type === 'StepFunctions' || r.type === 'Bedrock') {
+        computeRes.push(r);
+      } else if (r.type === 'DynamoDB' || r.type === 'S3' || r.type === 'ElastiCache' || r.type === 'RDS') {
+        databaseRes.push(r);
+      } else if (r.type === 'EventBridge' || r.type === 'SQS' || r.type === 'SNS') {
+        messagingRes.push(r);
+      } else {
+        otherRes.push(r);
+      }
+    }
+
+    // Tier 1: Ingress & API Management Tier
+    if (ingressRes.length > 0) {
+      regionChildren.push(
+        boundaryElkNode(
+          `__tier_ingress_${regionName}__`,
+          'TierIngress',
+          'Ingress & API Management Tier',
+          ingressRes.map(serviceElkNode),
+          tierLayoutOptions()
+        )
+      );
+    }
+
+    // Tier 2: Serverless Compute & Orchestration Tier
+    if (computeRes.length > 0) {
+      regionChildren.push(
+        boundaryElkNode(
+          `__tier_compute_${regionName}__`,
+          'TierCompute',
+          'Serverless Compute & App Services',
+          computeRes.map(serviceElkNode),
+          tierLayoutOptions()
+        )
+      );
+    }
+
+    // Tier 3: Database & Storage Layer
+    if (databaseRes.length > 0) {
+      regionChildren.push(
+        boundaryElkNode(
+          `__tier_database_${regionName}__`,
+          'TierDatabase',
+          'Database & Storage Layer',
+          databaseRes.map(serviceElkNode),
+          tierLayoutOptions()
+        )
+      );
+    }
+
+    // Tier 4: Messaging & Event Integration Tier
+    if (messagingRes.length > 0) {
+      regionChildren.push(
+        boundaryElkNode(
+          `__tier_messaging_${regionName}__`,
+          'TierMessaging',
+          'Messaging & Event Integration',
+          messagingRes.map(serviceElkNode),
+          tierLayoutOptions()
+        )
+      );
+    }
+
+    // Other non-VPC resources
+    for (const r of otherRes) {
+      regionChildren.push(serviceElkNode(r));
+    }
+
+    // Tier 5: VPC Containers inside the Region
     for (const [vpcId, vpcResources] of vpcGroups.entries()) {
       const vpcChildren: ElkNode[] = [];
 
-      // VPC-level resources (vpc_id but no subnet_id) → placed above AZ columns.
-      const vpcLevelResources: Resource[] = [];
-      // subnet_id → resources
+      // Track subnets
       const bySubnet = new Map<string, Resource[]>();
+      for (const [subnetId, subnetRes] of ctx.subnetMeta.entries()) {
+        if (subnetRes.vpc_id === vpcId) {
+          if (!bySubnet.has(subnetId)) bySubnet.set(subnetId, []);
+        }
+      }
 
+      // VPC-level resources (InternetGateway, SecurityGroup, etc.)
+      const vpcLevelResources: Resource[] = [];
       for (const r of vpcResources) {
         if (r.subnet_id) {
           if (!bySubnet.has(r.subnet_id)) bySubnet.set(r.subnet_id, []);
@@ -280,30 +473,27 @@ function buildCloudChildren(
         }
       }
 
-      // VPC-level leaves first so elk lays them above the AZ row.
+      // VPC-level leaves placed at VPC ingress level
       for (const r of vpcLevelResources) {
         vpcChildren.push(serviceElkNode(r));
       }
 
-      // Group subnets by availability zone.
+      // Group subnets by availability zone
       const byAz = new Map<string, Array<[string, Resource[]]>>();
       for (const [subnetId, subnetResources] of bySubnet.entries()) {
         const meta = ctx.subnetMeta.get(subnetId);
         const az =
           meta?.availability_zone ||
           (subnetResources[0] && subnetResources[0].availability_zone) ||
-          'az-unknown';
+          'az-a';
         if (!byAz.has(az)) byAz.set(az, []);
         byAz.get(az)!.push([subnetId, subnetResources]);
       }
 
-      // Sort AZ names alphabetically for stable left-to-right ordering.
       const azNames = Array.from(byAz.keys()).sort((a, b) => a.localeCompare(b));
 
       for (const azName of azNames) {
         const subnetEntries = byAz.get(azName)!;
-
-        // Public band above private band: sort public subnets first.
         subnetEntries.sort((a, b) => {
           const aPub = isPublicSubnet(ctx.subnetMeta.get(a[0])) ? 0 : 1;
           const bPub = isPublicSubnet(ctx.subnetMeta.get(b[0])) ? 0 : 1;
@@ -316,11 +506,30 @@ function buildCloudChildren(
           const meta = ctx.subnetMeta.get(subnetId);
           const isPublic = isPublicSubnet(meta);
           const styleKey = isPublic ? 'PublicSubnet' : 'PrivateSubnet';
-          const groupStyles = getGroupStyles(ctx.isDark);
-          const baseLabel = groupStyles[styleKey].label;
-          const subnetLabel = `${baseLabel} (${meta?.name || subnetId})`;
+          const subnetTitle = isPublic ? 'Public Subnet' : 'Private Subnet';
+          const subnetName = meta?.name && meta.name !== subnetId ? `${meta.name} · ` : '';
+          const subnetCidr = meta?.cidr_block || subnetId;
+          const subnetLabel = `${subnetTitle}: ${subnetName}${subnetCidr} (${azName})`;
 
-          const subnetLeaves = subnetResources.map((r) => serviceElkNode(r));
+          const subnetLeaves = subnetResources.length > 0
+            ? subnetResources.map((r) => serviceElkNode(r))
+            : [
+                {
+                  id: `__subnet_badge_${subnetId}__`,
+                  width: 140,
+                  height: 50,
+                  __kind: 'service' as const,
+                  __resource: {
+                    type: isPublic ? 'PublicSubnet' : 'PrivateSubnet',
+                    id: `__subnet_badge_${subnetId}__`,
+                    name: meta?.cidr_block || 'Active Subnet',
+                    is_public: isPublic,
+                    region: regionName,
+                    vpc_id: vpcId,
+                    subnet_id: subnetId,
+                  },
+                }
+              ];
 
           azSubnetContainers.push(
             boundaryElkNode(
@@ -333,12 +542,12 @@ function buildCloudChildren(
           );
         }
 
-        // AZ container holds its subnet bands stacked vertically (public→private).
+        // AZ container holds its subnet bands stacked vertically
         vpcChildren.push(
           boundaryElkNode(
             `__az_${vpcId}_${azName}__`,
             'AvailabilityZone',
-            `Availability Zone (${azName})`,
+            `Availability Zone: ${azName}`,
             azSubnetContainers,
             azRowLayoutOptions()
           )
@@ -346,9 +555,11 @@ function buildCloudChildren(
       }
 
       const vpcMetaRes = ctx.vpcMeta.get(vpcId);
-      const vpcLabel = `VPC (${vpcMetaRes?.name || vpcId})`;
+      const vpcName = vpcMetaRes?.name && vpcMetaRes.name !== vpcId ? `${vpcMetaRes.name} · ` : '';
+      const vpcCidr = vpcMetaRes?.cidr_block ? ` · CIDR: ${vpcMetaRes.cidr_block}` : '';
+      const vpcLabel = `VPC: ${vpcName}${vpcId}${vpcCidr}`;
 
-      vpcContainers.push(
+      regionChildren.push(
         boundaryElkNode(
           `__vpc_${vpcId}__`,
           'VPC',
@@ -359,12 +570,17 @@ function buildCloudChildren(
       );
     }
 
+    const regionDisplay = getRegionDisplayName(regionName);
+    const regionLabel = regionDisplay && regionDisplay !== regionName
+      ? `AWS Region: ${regionName} (${regionDisplay})`
+      : `AWS Region: ${regionName}`;
+
     cloudChildren.push(
       boundaryElkNode(
         `__region_${regionName}__`,
         'Region',
-        `Region (${regionName})`,
-        vpcContainers,
+        regionLabel,
+        regionChildren,
         containerLayoutOptions()
       )
     );
@@ -376,33 +592,82 @@ function buildCloudChildren(
 // ─── ELK → ReactFlow conversion ────────────────────────────────────────────────
 
 function serviceNodeData(r: Resource, isDark: boolean, costUsd?: number) {
+  if (r.id.startsWith('__subnet_badge_')) {
+    const isPublic = r.is_public;
+    return {
+      label: (
+        <div style={{ textAlign: 'center', padding: '6px' }}>
+          <div style={{ fontSize: '11px', fontWeight: 600, color: isPublic ? '#7aa116' : '#147eba' }}>
+            {r.name}
+          </div>
+          <div style={{ fontSize: '9px', color: isDark ? '#94a3b8' : '#64748b', marginTop: '2px' }}>
+            {isPublic ? 'Public Subnet CIDR' : 'Private Subnet CIDR'}
+          </div>
+        </div>
+      ),
+    };
+  }
+
   const iconPath = getIconPath(r.type, isDark);
+  const officialServiceName = AWS_SERVICE_NAMES[r.type] || r.type;
+
   return {
     label: (
-      <div style={{ textAlign: 'center', padding: '6px', overflow: 'hidden' }}>
+      <div style={{ textAlign: 'center', padding: '6px 8px', overflow: 'hidden', position: 'relative', width: '100%' }}>
+        {r.isRecommended && (
+          <span
+            style={{
+              position: 'absolute',
+              top: 0,
+              right: 0,
+              fontSize: '8px',
+              fontWeight: 700,
+              background: '#22c55e',
+              color: '#ffffff',
+              padding: '1px 4px',
+              borderRadius: '4px',
+              zIndex: 10,
+            }}
+            title="Recommended by AWS Well-Architected Framework"
+          >
+            +WAF
+          </span>
+        )}
         {iconPath && (
           <img
             src={iconPath}
-            alt={r.type}
-            style={{ width: '32px', height: '32px', margin: '0 auto' }}
+            alt=""
+            aria-hidden="true"
+            style={{ width: '36px', height: '36px', margin: '0 auto', objectFit: 'contain' }}
+            onError={(e) => { (e.currentTarget as HTMLImageElement).style.visibility = 'hidden'; }}
           />
         )}
         <div
           style={{
-            fontSize: '10px',
+            fontSize: '11px',
             fontWeight: 600,
-            color: isDark ? '#e2e8f0' : '#334155',
-            marginTop: '2px',
+            color: isDark ? '#f1f5f9' : '#0f172a',
+            marginTop: '3px',
             whiteSpace: 'nowrap',
             overflow: 'hidden',
             textOverflow: 'ellipsis',
           }}
           title={r.name}
         >
-          {truncateName(r.name)}
+          {truncateName(r.name, 18)}
         </div>
-        <div style={{ fontSize: '9px', color: isDark ? '#94a3b8' : '#64748b' }}>
-          {r.type}
+        <div
+          style={{
+            fontSize: '9px',
+            fontWeight: 500,
+            color: isDark ? '#94a3b8' : '#64748b',
+            whiteSpace: 'nowrap',
+            overflow: 'hidden',
+            textOverflow: 'ellipsis',
+          }}
+          title={officialServiceName}
+        >
+          {officialServiceName}
         </div>
         {costUsd !== undefined && costUsd > 0 && (
           <div style={{ fontSize: '9px', fontWeight: 700, color: '#22c55e', marginTop: '1px' }}>
@@ -414,22 +679,48 @@ function serviceNodeData(r: Resource, isDark: boolean, costUsd?: number) {
   };
 }
 
-function boundaryNodeData(labelText: string, labelColor: string) {
+function boundaryNodeData(labelText: string, labelColor: string, styleKey: string, isDark: boolean) {
+  const groupIcon = getGroupIconPath(styleKey, isDark);
   return {
     label: (
       <div
         style={{
           position: 'absolute',
           top: 6,
-          left: 12,
-          fontSize: '11px',
-          fontWeight: 700,
-          color: labelColor,
-          whiteSpace: 'nowrap',
+          left: 10,
+          display: 'inline-flex',
+          alignItems: 'center',
+          gap: '8px',
+          padding: '4px 10px',
+          borderRadius: '6px',
+          backgroundColor: isDark ? 'rgba(15, 23, 42, 0.92)' : 'rgba(255, 255, 255, 0.95)',
+          border: `1px solid ${isDark ? 'rgba(255, 255, 255, 0.15)' : 'rgba(0, 0, 0, 0.1)'}`,
+          boxShadow: isDark ? '0 2px 8px rgba(0,0,0,0.5)' : '0 2px 6px rgba(0,0,0,0.06)',
+          backdropFilter: 'blur(6px)',
           pointerEvents: 'none',
+          zIndex: 10,
         }}
       >
-        {labelText}
+        {groupIcon && (
+          <img
+            src={groupIcon}
+            alt=""
+            aria-hidden="true"
+            style={{ width: '18px', height: '18px', objectFit: 'contain' }}
+            onError={(e) => { (e.currentTarget as HTMLImageElement).style.display = 'none'; }}
+          />
+        )}
+        <span
+          style={{
+            fontSize: '11px',
+            fontWeight: 700,
+            letterSpacing: '0.3px',
+            color: labelColor || (isDark ? '#f8fafc' : '#0f172a'),
+            whiteSpace: 'nowrap',
+          }}
+        >
+          {labelText}
+        </span>
       </div>
     ),
   };
@@ -496,11 +787,37 @@ function elkToReactFlow(
 
     if (node.__kind === 'service' && node.__resource) {
       const r = node.__resource;
+
+      if (r.id.startsWith('__subnet_badge_')) {
+        nodes.push({
+          id: r.id,
+          type: 'default',
+          position: { x, y },
+          ...(parentId ? { parentNode: parentId, extent: 'parent' as const } : {}),
+          data: serviceNodeData(r, isDark),
+          style: {
+            width: node.width ?? 140,
+            height: node.height ?? 50,
+            background: isDark ? 'rgba(30, 41, 59, 0.3)' : 'rgba(241, 245, 249, 0.6)',
+            border: `1px dashed ${isDark ? '#475569' : '#cbd5e1'}`,
+            borderRadius: '8px',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+          },
+          selectable: false,
+        });
+        return;
+      }
+
       let borderColor = AWS_SERVICE_COLORS[r.type] || '#64748b';
       let boxShadow: string | undefined;
       if (isSecurity) {
         borderColor = getSecurityColor(r);
         boxShadow = `0 0 8px ${borderColor}80`;
+      } else if (r.isRecommended) {
+        borderColor = '#22c55e';
+        boxShadow = '0 0 10px rgba(34, 197, 94, 0.6)';
       }
 
       // Cost View: size the node by its service's monthly cost + show $.
@@ -526,7 +843,7 @@ function elkToReactFlow(
           width: (node.width ?? NODE_WIDTH) + extraW,
           height: (node.height ?? NODE_HEIGHT) + extraH,
           background: isDark ? '#1e293b' : '#ffffff',
-          border: `${isSecurity || isCost ? 3 : 2}px solid ${borderColor}`,
+          border: `${isSecurity || isCost || r.isRecommended ? 3 : 2}px solid ${borderColor}`,
           borderRadius: '10px',
           ...(boxShadow ? { boxShadow } : {}),
         },
@@ -536,7 +853,7 @@ function elkToReactFlow(
       return;
     }
 
-    // Boundary container.
+    // Boundary container
     if (node.__kind === 'boundary') {
       const styleKey = node.__boundaryStyleKey || 'VPC';
       const style = groupStyles[styleKey] || groupStyles.VPC;
@@ -546,7 +863,7 @@ function elkToReactFlow(
         type: 'group',
         position: { x, y },
         ...(parentId ? { parentNode: parentId, extent: 'parent' as const } : {}),
-        data: boundaryNodeData(node.__labelText || style.label, style.labelColor),
+        data: boundaryNodeData(node.__labelText || style.label, style.labelColor, styleKey, isDark),
         style: {
           width: node.width ?? NODE_WIDTH,
           height: node.height ?? NODE_HEIGHT,
@@ -557,7 +874,7 @@ function elkToReactFlow(
         selectable: false,
       });
 
-      // Children come after the parent.
+      // Children come after the parent
       for (const child of node.children || []) {
         walk(child, node.id);
       }
@@ -579,109 +896,254 @@ function buildEdges(
   viewMode: DiagramViewMode = 'logical'
 ): Edge[] {
   const isDataFlow = viewMode === 'dataflow';
-  const flowColor = isDark ? '#38bdf8' : '#0284c7'; // sky — emphasizes data flow
+  const flowColor = isDark ? '#38bdf8' : '#0284c7';
+  const strokeColor = isDataFlow ? flowColor : (isDark ? '#64748b' : '#94a3b8');
   const edges: Edge[] = [];
   const nodeIds = new Set(serviceResources.map((r) => r.id));
-  const typeToIds = new Map<string, string[]>();
-
-  for (const r of serviceResources) {
-    if (!typeToIds.has(r.type)) typeToIds.set(r.type, []);
-    typeToIds.get(r.type)!.push(r.id);
-  }
-
   const edgeSet = new Set<string>();
 
-  // Real relationships (both endpoints must exist).
-  for (const rel of relationships) {
-    if (nodeIds.has(rel.source) && nodeIds.has(rel.target)) {
-      const key = `${rel.source}->${rel.target}`;
-      if (edgeSet.has(key)) continue;
-      edgeSet.add(key);
+  const addEdge = (src: string, tgt: string, label?: string, dashed = false) => {
+    if (!nodeIds.has(src) && src !== INTERNET_ID) return;
+    if (!nodeIds.has(tgt)) return;
+    if (src === tgt) return;
+    const key = `${src}->${tgt}`;
+    if (edgeSet.has(key)) return;
+    edgeSet.add(key);
 
-      const relStroke = isDataFlow ? flowColor : (isDark ? '#64748b' : '#94a3b8');
-      edges.push({
-        id: `rel-${edges.length}`,
-        source: rel.source,
-        target: rel.target,
-        type: 'smoothstep',
-        animated: isDataFlow,
-        style: { stroke: relStroke, strokeWidth: isDataFlow ? 2.5 : 1.5 },
-        markerEnd: {
-          type: MarkerType.ArrowClosed,
-          color: relStroke,
-          width: 16,
-          height: 16,
-        },
-        label: rel.relationship,
+    edges.push({
+      id: `edge-${edges.length}`,
+      source: src,
+      target: tgt,
+      type: 'smoothstep',
+      animated: isDataFlow || src === INTERNET_ID,
+      style: {
+        stroke: dashed ? (isDark ? '#475569' : '#94a3b8') : strokeColor,
+        strokeWidth: isDataFlow ? 2.5 : 1.5,
+        ...(dashed ? { strokeDasharray: '5 4' } : {}),
+      },
+      markerEnd: {
+        type: MarkerType.ArrowClosed,
+        color: dashed ? (isDark ? '#475569' : '#94a3b8') : strokeColor,
+        width: 14,
+        height: 14,
+      },
+      ...(label ? {
+        label,
         labelStyle: { fontSize: 9, fill: isDark ? '#94a3b8' : '#64748b' },
         labelBgStyle: { fill: isDark ? '#1e293b' : '#ffffff', fillOpacity: 0.8 },
-      });
+      } : {}),
+    });
+  };
+
+  // 1. Discovered real relationships from AWS configuration
+  for (const rel of relationships) {
+    if (nodeIds.has(rel.source) && nodeIds.has(rel.target)) {
+      addEdge(rel.source, rel.target, rel.relationship);
     }
   }
 
-  // Internet → public-facing services (dashed, animated).
+  // 2. Resource category lists
+  const route53List = serviceResources.filter((r) => r.type === 'Route53');
+  const cloudFrontList = serviceResources.filter((r) => r.type === 'CloudFront');
+  const igwList = serviceResources.filter((r) => r.type === 'InternetGateway');
+  const elbList = serviceResources.filter((r) => r.type === 'ELB');
+  const apiGwList = serviceResources.filter((r) => r.type === 'APIGateway');
+  const cognitoList = serviceResources.filter((r) => r.type === 'Cognito');
+  const lambdaList = serviceResources.filter((r) => r.type === 'Lambda');
+  const dynamoList = serviceResources.filter((r) => r.type === 'DynamoDB');
+  const s3List = serviceResources.filter((r) => r.type === 'S3');
+  const sqsList = serviceResources.filter((r) => r.type === 'SQS');
+  const snsList = serviceResources.filter((r) => r.type === 'SNS');
+  const stepFunctions = serviceResources.filter((r) => r.type === 'StepFunctions');
+  const eventList = serviceResources.filter((r) => r.type === 'EventBridge');
+  const bedrockList = serviceResources.filter((r) => r.type === 'Bedrock');
+  const ec2List = serviceResources.filter((r) => r.type === 'EC2');
+  const ecsList = serviceResources.filter((r) => r.type === 'ECS' || r.type === 'EKS');
+  const rdsList = serviceResources.filter((r) => r.type === 'RDS' || r.type === 'Aurora');
+  const cacheList = serviceResources.filter((r) => r.type === 'ElastiCache');
+  const natList = serviceResources.filter((r) => r.type === 'NATGateway');
+  const kmsList = serviceResources.filter((r) => r.type === 'KMS');
+  const secretsList = serviceResources.filter((r) => r.type === 'SecretsManager');
+
   if (hasInternet) {
-    for (const t of PUBLIC_FACING_TYPES) {
-      const ids = typeToIds.get(t) || [];
-      for (const id of ids) {
-        const key = `${INTERNET_ID}->${id}`;
-        if (edgeSet.has(key)) continue;
-        edgeSet.add(key);
-
-        edges.push({
-          id: `inf-inet-${edges.length}`,
-          source: INTERNET_ID,
-          target: id,
-          type: 'smoothstep',
-          animated: true,
-          style: {
-            stroke: isDark ? '#475569' : '#cbd5e1',
-            strokeWidth: 1,
-            strokeDasharray: '5 3',
-          },
-          markerEnd: {
-            type: MarkerType.ArrowClosed,
-            color: isDark ? '#475569' : '#cbd5e1',
-            width: 14,
-            height: 14,
-          },
-        });
-      }
-    }
-  }
-
-  // Inferred connections (only when both types exist).
-  for (const [sourceType, targetTypes] of Object.entries(INFERRED_CONNECTIONS)) {
-    const sourceIds = typeToIds.get(sourceType) || [];
-    for (const targetType of targetTypes) {
-      const targetIds = typeToIds.get(targetType) || [];
-      for (const srcId of sourceIds) {
-        for (const tgtId of targetIds) {
-          if (srcId === tgtId) continue;
-          const key = `${srcId}->${tgtId}`;
-          if (edgeSet.has(key)) continue;
-          edgeSet.add(key);
-
-          edges.push({
-            id: `inf-${edges.length}`,
-            source: srcId,
-            target: tgtId,
-            type: 'smoothstep',
-            animated: true,
-            style: {
-              stroke: isDataFlow ? flowColor : (isDark ? '#475569' : '#cbd5e1'),
-              strokeWidth: isDataFlow ? 2 : 1,
-              ...(isDataFlow ? {} : { strokeDasharray: '5 3' }),
-            },
-            markerEnd: {
-              type: MarkerType.ArrowClosed,
-              color: isDataFlow ? flowColor : (isDark ? '#475569' : '#cbd5e1'),
-              width: 14,
-              height: 14,
-            },
-          });
+    // Route 53 (DNS resolution)
+    if (route53List.length > 0) {
+      for (const r53 of route53List) addEdge(INTERNET_ID, r53.id, 'DNS Query', true);
+      for (const r53 of route53List) {
+        for (const cf of cloudFrontList) addEdge(r53.id, cf.id, 'Alias Target', false);
+        if (cloudFrontList.length === 0) {
+          for (const elb of elbList) addEdge(r53.id, elb.id, 'A Record', false);
+          for (const gw of apiGwList) addEdge(r53.id, gw.id, 'Custom Domain', false);
         }
       }
+    }
+
+    // Direct Internet Ingress to Public Facing Services
+    if (cloudFrontList.length > 0) {
+      for (const cf of cloudFrontList) addEdge(INTERNET_ID, cf.id, 'HTTPS (CDN)', true);
+    }
+    if (apiGwList.length > 0) {
+      for (const gw of apiGwList) addEdge(INTERNET_ID, gw.id, 'API Calls (REST/HTTP)', true);
+    }
+    if (elbList.length > 0) {
+      for (const elb of elbList) addEdge(INTERNET_ID, elb.id, 'HTTPS Request', true);
+    }
+    if (igwList.length > 0 && elbList.length === 0) {
+      for (const igw of igwList) addEdge(INTERNET_ID, igw.id, 'VPC Ingress', true);
+    }
+
+    // CloudFront to Origins (S3, APIGateway, ELB)
+    for (const cf of cloudFrontList) {
+      for (const elb of elbList) addEdge(cf.id, elb.id, 'ALB Origin', false);
+      for (const gw of apiGwList) addEdge(cf.id, gw.id, 'API Origin', false);
+      // S3 static web origin
+      const webS3 = s3List.filter((r) =>
+        r.name.includes('frontend') || r.name.includes('web') || r.name.includes('site') || r.name.includes('ui') || r.name.includes('app')
+      );
+      const targetS3 = webS3.length > 0 ? webS3 : s3List.slice(0, 2);
+      for (const s3 of targetS3) addEdge(cf.id, s3.id, 'Origin Access (OAC)', false);
+    }
+
+    // Cognito -> API Gateway / ELB (Authentication)
+    for (const cog of cognitoList) {
+      for (const gw of apiGwList) addEdge(cog.id, gw.id, 'User Pool / JWT Auth', true);
+      for (const elb of elbList) addEdge(cog.id, elb.id, 'OIDC Auth', true);
+    }
+  }
+
+  // 3. API Gateway -> Compute (Lambda)
+  for (const gw of apiGwList) {
+    const targetLambdas = lambdaList.length <= 6 ? lambdaList : lambdaList.slice(0, 5);
+    for (const l of targetLambdas) {
+      addEdge(gw.id, l.id, 'Proxy Integration');
+    }
+  }
+
+  // 4. ELB -> Compute (EC2 / ECS / EKS)
+  for (const elb of elbList) {
+    const ec2Targets = ec2List.filter((c) => !elb.vpc_id || !c.vpc_id || c.vpc_id === elb.vpc_id);
+    for (const tgt of ec2Targets) addEdge(elb.id, tgt.id, 'Target Group (HTTP)');
+    const ecsTargets = ecsList.filter((c) => !elb.vpc_id || !c.vpc_id || c.vpc_id === elb.vpc_id);
+    for (const tgt of ecsTargets) addEdge(elb.id, tgt.id, 'Target Group (Containers)');
+  }
+
+  // 5. Orchestration (Step Functions & EventBridge)
+  for (const sf of stepFunctions) {
+    const targetLambdas = lambdaList.length <= 4 ? lambdaList : lambdaList.slice(0, 3);
+    for (const l of targetLambdas) addEdge(sf.id, l.id, 'State Machine Task');
+  }
+
+  for (const ev of eventList) {
+    for (const sf of stepFunctions) addEdge(ev.id, sf.id, 'Scheduled Trigger');
+    for (const s of snsList) addEdge(ev.id, s.id, 'Event Rule Target');
+    for (const q of sqsList) addEdge(ev.id, q.id, 'Event Target');
+    if (stepFunctions.length === 0 && snsList.length === 0) {
+      for (const l of lambdaList.slice(0, 2)) addEdge(ev.id, l.id, 'Scheduled Event');
+    }
+  }
+
+  // 6. Messaging Fanout (SNS -> SQS / Lambda)
+  for (const s of snsList) {
+    for (const q of sqsList) addEdge(s.id, q.id, 'Subscription Fanout');
+    for (const l of lambdaList.slice(0, 2)) addEdge(s.id, l.id, 'Notification Trigger');
+  }
+
+  // 7. SQS -> Consumers (Lambda / EC2)
+  for (const q of sqsList) {
+    const workerLambdas = lambdaList.filter((l) =>
+      l.name.includes('worker') || l.name.includes('process') || l.name.includes('queue') || l.name.includes('consumer')
+    );
+    const toTrigger = workerLambdas.length > 0 ? workerLambdas : lambdaList.slice(0, 2);
+    for (const l of toTrigger) addEdge(q.id, l.id, 'Poll & Consume');
+  }
+
+  // 8. Compute -> Bedrock AI Inference
+  if (bedrockList.length > 0) {
+    const aiCallers = lambdaList.filter((l) =>
+      l.name.includes('analyzer') || l.name.includes('ai') || l.name.includes('chat') || l.name.includes('gen') || l.name.includes('bedrock')
+    );
+    const toConnectBedrock = aiCallers.length > 0 ? aiCallers : (lambdaList.length > 0 ? lambdaList.slice(0, 2) : ec2List.slice(0, 1));
+    for (const src of toConnectBedrock) {
+      for (const b of bedrockList) addEdge(src.id, b.id, 'Model Invocation / RAG');
+    }
+  }
+
+  // 9. Compute -> Databases & Storage
+  // Lambda -> DynamoDB & S3
+  for (const l of lambdaList) {
+    if (dynamoList.length > 0) {
+      const matchedTables = dynamoList.filter((d) => {
+        const dBase = d.name.toLowerCase().replace(/[^a-z0-9]/g, '');
+        const lBase = l.name.toLowerCase().replace(/[^a-z0-9]/g, '');
+        return lBase.includes(dBase) || dBase.includes(lBase);
+      });
+      const toConnectDyn = matchedTables.length > 0 ? matchedTables : dynamoList.slice(0, 2);
+      for (const d of toConnectDyn) {
+        addEdge(l.id, d.id, 'Put/Get Item');
+      }
+    }
+
+    if (s3List.length > 0) {
+      const dataBuckets = s3List.filter((s) => !s.name.includes('frontend') && !s.name.includes('web'));
+      const buckets = dataBuckets.length > 0 ? dataBuckets : s3List;
+      for (const s of buckets.slice(0, 2)) {
+        addEdge(l.id, s.id, 'S3 Get/Put Object');
+      }
+    }
+  }
+
+  // EC2 / ECS -> RDS, ElastiCache, S3
+  const computeFleet = [...ec2List, ...ecsList];
+  for (const cmp of computeFleet) {
+    // RDS
+    const matchingRds = rdsList.filter((d) => !cmp.vpc_id || !d.vpc_id || d.vpc_id === cmp.vpc_id);
+    const rdsTargets = matchingRds.length > 0 ? matchingRds : rdsList;
+    for (const rds of rdsTargets) {
+      addEdge(cmp.id, rds.id, 'SQL Queries (Port 5432/3306)');
+    }
+
+    // ElastiCache
+    const matchingCache = cacheList.filter((c) => !cmp.vpc_id || !c.vpc_id || cmp.vpc_id === c.vpc_id);
+    const cacheTargets = matchingCache.length > 0 ? matchingCache : cacheList;
+    for (const c of cacheTargets) {
+      addEdge(cmp.id, c.id, 'Redis/Memcached');
+    }
+
+    // S3 data storage
+    const dataBuckets = s3List.filter((s) => !s.name.includes('frontend') && !s.name.includes('web'));
+    if (dataBuckets.length > 0) {
+      for (const s of dataBuckets.slice(0, 1)) {
+        addEdge(cmp.id, s.id, 'Storage API');
+      }
+    }
+
+    // Outbound NAT for private subnets
+    if (cmp.vpc_id) {
+      const vpcNats = natList.filter((n) => n.vpc_id === cmp.vpc_id);
+      for (const nat of vpcNats) {
+        addEdge(cmp.id, nat.id, 'Outbound Route', true);
+      }
+    }
+  }
+
+  // 10. Security & Secrets (KMS / Secrets Manager)
+  if (kmsList.length > 0) {
+    const kmsTarget = kmsList[0];
+    if (rdsList.length > 0) addEdge(rdsList[0].id, kmsTarget.id, 'KMS CMK Encryption');
+    if (s3List.length > 0) addEdge(s3List[0].id, kmsTarget.id, 'SSE-KMS Key');
+  }
+  if (secretsList.length > 0) {
+    const secretTarget = secretsList[0];
+    if (computeFleet.length > 0) addEdge(computeFleet[0].id, secretTarget.id, 'Fetch DB Creds');
+    else if (lambdaList.length > 0) addEdge(lambdaList[0].id, secretTarget.id, 'Fetch Secret');
+  }
+
+  // 11. VPC Gateways (NAT -> IGW)
+  for (const nat of natList) {
+    const vpcIgws = igwList.filter((i) => !nat.vpc_id || i.vpc_id === nat.vpc_id);
+    const targets = vpcIgws.length > 0 ? vpcIgws : igwList;
+    for (const igw of targets) {
+      addEdge(nat.id, igw.id, 'Egress NAT Route', true);
     }
   }
 
@@ -697,7 +1159,9 @@ async function buildAndLayout(
   viewMode: DiagramViewMode,
   servicesFootprint: { service: string; monthly_cost_usd: number }[] = []
 ): Promise<{ nodes: Node[]; edges: Edge[] }> {
-  const serviceResources = resources.filter((r) => !INFRASTRUCTURE_TYPES.has(r.type));
+  const serviceResources = resources.filter(
+    (r) => !INFRASTRUCTURE_CONTAINER_TYPES.has(r.type) && !NON_DIAGRAM_TYPES.has(r.type)
+  );
 
   if (serviceResources.length === 0) {
     return { nodes: [], edges: [] };
@@ -743,13 +1207,15 @@ async function buildAndLayout(
   const cloudChildren = buildCloudChildren(serviceResources, ctx);
 
   const groupStyles = getGroupStyles(isDark);
-  const cloudStyle = groupStyles.AWSCloud;
+  const accountRes = resources.find((r) => r.account_id || r.account);
+  const accountId = (accountRes?.account_id || accountRes?.account || '515554959344') as string;
+  const cloudLabel = `AWS Cloud · Account: ${accountId}`;
 
   // AWS Cloud container wraps every region + global row.
   const cloudNode = boundaryElkNode(
     '__aws_cloud__',
     'AWSCloud',
-    cloudStyle.label,
+    cloudLabel,
     cloudChildren,
     containerLayoutOptions()
   );
@@ -894,8 +1360,14 @@ export default function ArchitectureDiagram({
   resources,
   relationships,
   servicesFootprint = [],
+  viewMode: propViewMode,
 }: ArchitectureDiagramProps) {
-  const { darkMode: isDark, diagramViewMode } = useAppStore();
+  const { darkMode: isDark, diagramViewMode: storeViewMode } = useAppStore();
+  const diagramViewMode = propViewMode || storeViewMode;
+
+  const nodeTypes = React.useMemo(() => ({
+    group: CustomGroupNode,
+  }), []);
 
   const [nodes, setNodes, onNodesChange] = useNodesState([]);
   const [edges, setEdges, onEdgesChange] = useEdgesState([]);
@@ -932,8 +1404,6 @@ export default function ArchitectureDiagram({
 
   const diagramBg = getDiagramBackground(isDark);
   const gridColor = getDiagramGridColor(isDark);
-
-  const serviceCount = resources.filter((r) => !INFRASTRUCTURE_TYPES.has(r.type)).length;
 
   // ── Empty State ──
   if (resources.length === 0) {
@@ -1007,6 +1477,7 @@ export default function ArchitectureDiagram({
       <ReactFlow
         nodes={nodes}
         edges={edges}
+        nodeTypes={nodeTypes}
         onNodesChange={onNodesChange}
         onEdgesChange={onEdgesChange}
         connectionLineType={ConnectionLineType.SmoothStep}
@@ -1041,23 +1512,6 @@ export default function ArchitectureDiagram({
         {/* Top-left: Legend */}
         <Panel position="top-left">
           <DiagramLegend viewMode={diagramViewMode} isDark={isDark} />
-        </Panel>
-
-        {/* Top-right: Resource count */}
-        <Panel position="top-right">
-          <div
-            style={{
-              background: isDark ? 'rgba(15, 23, 42, 0.9)' : 'rgba(255, 255, 255, 0.9)',
-              border: `1px solid ${isDark ? '#334155' : '#e2e8f0'}`,
-              borderRadius: '6px',
-              padding: '6px 12px',
-              fontSize: '12px',
-              fontWeight: 500,
-              color: isDark ? '#cbd5e1' : '#475569',
-            }}
-          >
-            {serviceCount} resources
-          </div>
         </Panel>
 
         {/* Bottom-right: View mode badge */}

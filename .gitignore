@@ -39,3 +39,7 @@ Thumbs.db
 _awscheck/
 scan_out.json
 *.tmp
+wf-out.json
+extracted_*.txt
+temp_*.docx
+*.pptx

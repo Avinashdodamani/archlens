@@ -13,10 +13,11 @@ import InsightHubPage from './pages/InsightHubPage';
 import CallbackPage from './pages/CallbackPage';
 
 function App() {
-  const { isAuthenticated, setAuth } = useAppStore();
+  const { isAuthenticated, setAuth, syncScansFromBackend } = useAppStore();
 
   useEffect(() => {
     checkAuthStatus();
+    syncScansFromBackend();
   }, []);
 
   async function checkAuthStatus() {

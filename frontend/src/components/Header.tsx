@@ -1,4 +1,5 @@
 import { signOut } from 'aws-amplify/auth';
+import { useLocation, useNavigate } from 'react-router-dom';
 import { useAppStore } from '../store/useAppStore';
 import NotificationCenter from './NotificationCenter';
 import {
@@ -6,10 +7,14 @@ import {
   MoonIcon,
   ArrowRightOnRectangleIcon,
   MagnifyingGlassIcon,
+  GlobeAltIcon,
+  ChevronRightIcon,
 } from '@heroicons/react/24/outline';
 
 export default function Header() {
-  const { user, darkMode, toggleDarkMode, currentStep, setAuth } = useAppStore();
+  const { user, darkMode, toggleDarkMode, currentStep, setAuth, scanResult, selectedRegion, activeAccountId, connectedAccounts } = useAppStore();
+  const location = useLocation();
+  const navigate = useNavigate();
 
   async function handleSignOut() {
     try {
@@ -49,26 +54,54 @@ export default function Header() {
 
   function getStepColor(): string {
     if (['discovering', 'analyzing', 'generating_scripts', 'backing_up', 'deploying', 'monitoring', 'rolling_back'].includes(currentStep)) {
-      return 'text-yellow-400 bg-yellow-500/10';
+      return 'text-yellow-400 bg-yellow-500/10 border border-yellow-500/20';
     }
     if (['discovered', 'analyzed', 'scripts_ready', 'backup_complete', 'success'].includes(currentStep)) {
-      return 'text-green-400 bg-green-500/10';
+      return 'text-emerald-400 bg-emerald-500/10 border border-emerald-500/20';
     }
-    if (currentStep === 'failed') return 'text-red-400 bg-red-500/10';
+    if (currentStep === 'failed') return 'text-red-400 bg-red-500/10 border border-red-500/20';
     return '';
   }
+
+  // Breadcrumbs based on path
+  const breadcrumbMap: Record<string, { tab: string; section: string }> = {
+    '/': { tab: 'Dashboard', section: 'Executive Command Center' },
+    '/your-arch': { tab: 'YourArch', section: 'Architecture Topology & Discovery' },
+    '/redefine': { tab: 'RedefineYourArch', section: 'Bedrock WAF Optimization' },
+    '/auto-remediate': { tab: 'AutoRemediate', section: 'Safe Staged Implementation' },
+    '/insights': { tab: 'InsightHub', section: 'Continuous Intelligence & Schedules' },
+  };
+  const currentCrumb = breadcrumbMap[location.pathname] || { tab: 'ArchLens', section: 'Platform' };
+
+  const activeAccount = connectedAccounts.find(a => a.id === activeAccountId) || connectedAccounts[0];
+  const accountId = scanResult?.accountId || activeAccount?.accountId;
+  const regionDisplay = scanResult?.regions?.length && scanResult.regions.length > 1
+    ? `${scanResult.regions.length} Regions`
+    : (selectedRegion || scanResult?.regions?.[0] || 'ap-south-1');
 
   const username = user?.name || user?.email?.split('@')[0] || 'User';
   const initial = (user?.name || user?.email || 'U').charAt(0).toUpperCase();
 
   return (
-    <header className={`h-14 backdrop-blur-md border-b flex items-center justify-between px-6 sticky top-0 z-30 ${
+    <header className={`h-14 backdrop-blur-md border-b flex items-center justify-between px-6 sticky top-0 z-30 transition-colors ${
       darkMode ? 'bg-dark-900/80 border-dark-700/50' : 'bg-white/90 border-gray-200'
     }`}>
-      {/* Left - Status */}
-      <div className="flex items-center gap-3">
+      {/* Left - Breadcrumbs & Context */}
+      <div className="flex items-center gap-3 min-w-0">
+        <div className="flex items-center gap-1.5 text-xs text-gray-400 truncate">
+          <span className="font-semibold text-gray-200 hover:text-white cursor-pointer transition-colors" onClick={() => navigate('/')}>
+            ArchLens
+          </span>
+          <ChevronRightIcon className="w-3 h-3 text-gray-600 flex-shrink-0" />
+          <span className="font-medium text-primary-400">{currentCrumb.tab}</span>
+          <span className="hidden lg:inline-flex items-center gap-1.5 text-gray-500">
+            <span className="text-gray-700">•</span>
+            <span className="text-[11px] truncate">{currentCrumb.section}</span>
+          </span>
+        </div>
+
         {getStepLabel() && (
-          <div className={`flex items-center gap-2 px-3 py-1.5 rounded-lg text-xs font-medium ${getStepColor()}`}>
+          <div className={`hidden sm:flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-xs font-medium ${getStepColor()}`}>
             {['discovering', 'analyzing', 'generating_scripts', 'backing_up', 'deploying', 'monitoring', 'rolling_back'].includes(currentStep) && (
               <div className="w-1.5 h-1.5 rounded-full bg-current animate-pulse" />
             )}
@@ -81,7 +114,19 @@ export default function Header() {
       </div>
 
       {/* Right - Actions */}
-      <div className="flex items-center gap-2">
+      <div className="flex items-center gap-2.5">
+        {/* Active Account & Region Badge */}
+        {accountId && (
+          <div className="hidden md:flex items-center gap-2 px-3 py-1 rounded-xl bg-dark-950/60 border border-dark-700/60 text-xs">
+            <div className="flex items-center gap-1.5 text-gray-300">
+              <GlobeAltIcon className="w-3.5 h-3.5 text-brand-400" />
+              <span className="font-mono text-[11px] text-gray-300">{regionDisplay}</span>
+            </div>
+            <span className="text-dark-600">|</span>
+            <span className="font-mono text-[11px] text-gray-400">{accountId}</span>
+          </div>
+        )}
+
         {/* Command palette hint (Cmd/Ctrl+K) */}
         <button
           onClick={() => {

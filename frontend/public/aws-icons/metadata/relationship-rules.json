@@ -1,0 +1,43 @@
+{
+  "version": "1.0",
+  "rule": "Only create edges from discovered evidence. Never connect resources merely because both exist.",
+  "evidence_types": [
+    "direct-aws-configuration",
+    "resource-association",
+    "network-attachment",
+    "load-balancer-target",
+    "service-integration",
+    "event-subscription",
+    "event-rule-target",
+    "user-confirmed",
+    "ai-inferred"
+  ],
+  "confidence": [
+    "verified",
+    "high-confidence",
+    "inferred",
+    "unknown"
+  ],
+  "edge_presets": {
+    "network": {
+      "directional": true,
+      "style": "solid"
+    },
+    "api": {
+      "directional": true,
+      "style": "solid"
+    },
+    "event": {
+      "directional": true,
+      "style": "dashed"
+    },
+    "data-flow": {
+      "directional": true,
+      "style": "solid"
+    },
+    "dependency": {
+      "directional": true,
+      "style": "dashed"
+    }
+  }
+}

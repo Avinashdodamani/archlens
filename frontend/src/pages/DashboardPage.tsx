@@ -20,9 +20,10 @@ import { WAF_PILLARS } from '../config/constants';
 import { getServiceIconPath } from '../config/aws-icon-map';
 import WafRadarChart from '../components/WafRadarChart';
 import { scoreTextClass, scoreBarClass } from '../config/theme';
+import { formatScanTime } from '../utils/formatDate';
 
 export default function DashboardPage() {
-  const { scanResult, analysisResult, savedScans, connectedAccounts, activeAccountId, darkMode } = useAppStore();
+  const { scanResult, analysisResult, savedScans, connectedAccounts, activeAccountId, darkMode, currentStep } = useAppStore();
   const navigate = useNavigate();
 
   const overallScore = analysisResult?.analysis?.overall_score || 0;
@@ -31,15 +32,40 @@ export default function DashboardPage() {
   const totalRecommendations = analysisResult?.analysis?.recommendations?.length || 0;
   const riskSummary = analysisResult?.analysis?.risk_summary;
 
-  // Onboarding progress
-  const steps = [
-    { label: 'Connect', done: connectedAccounts.length > 0 || !!scanResult },
-    { label: 'Discover', done: savedScans.length > 0 },
-    { label: 'Analyze', done: !!analysisResult },
-    { label: 'Remediate', done: false },
-    { label: 'Monitor', done: false },
+  // Onboarding progress. `active` marks the step that is currently running
+  // (e.g. analysis in progress) so the flow shows a live amber "In progress".
+  // Each step's raw completion signal:
+  const rawDone = [
+    connectedAccounts.length > 0 || !!scanResult,               // Connect AWS Account
+    savedScans.length > 0,                                       // Discover Architecture
+    !!analysisResult,                                            // Analyze Architecture
+    (analysisResult?.analysis?.recommendations?.length || 0) > 0, // Review Recommendations
+    savedScans.length >= 2,                                      // Monitor Changes
   ];
-  const completedSteps = steps.filter((s) => s.done).length;
+  // Onboarding is SEQUENTIAL: a step is only "done" (green) if every prior
+  // step is done too. This prevents a later step (e.g. Monitor Changes) from
+  // turning green while an earlier one (Review Recommendations) is still open.
+  const seqDone: boolean[] = [];
+  for (let i = 0; i < rawDone.length; i++) {
+    seqDone[i] = rawDone[i] && (i === 0 || seqDone[i - 1]);
+  }
+  const stepLabels = [
+    'Connect AWS Account',
+    'Discover Architecture',
+    'Analyze Architecture',
+    'Review Recommendations',
+    'Monitor Changes',
+  ];
+  const activeSignals = [
+    currentStep === 'discovering' && !scanResult,
+    currentStep === 'discovering',
+    currentStep === 'analyzing',
+    false,
+    false,
+  ];
+  const steps = stepLabels.map((label, i) => ({ label, done: seqDone[i], active: activeSignals[i] }));
+  // Count ONLY completed steps (never counts the in-progress one).
+  const completedSteps = seqDone.filter(Boolean).length;
 
   // Cost trend (from Cost Explorer, via discovery — real per-account values)
   const costTrend = scanResult?.costTrend || [];
@@ -47,18 +73,27 @@ export default function DashboardPage() {
   return (
     <div className="space-y-6 animate-fade-in">
       {/* Page Header */}
-      <div className="flex items-center justify-between">
+      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
         <div>
-          <h1 className="text-2xl font-bold text-white">Dashboard</h1>
-          <p className="text-gray-400 text-sm mt-1">Your cloud architecture intelligence at a glance</p>
+          <h1 className="text-2xl font-bold text-white tracking-tight">Executive Dashboard</h1>
+          <p className="text-gray-400 text-sm mt-0.5">Real-time cloud architecture health, WAF compliance, and AI optimization metrics</p>
         </div>
-        <button
-          onClick={() => navigate('/your-arch')}
-          className="btn-primary flex items-center gap-2 shadow-lg shadow-primary-500/20"
-        >
-          <ArrowPathIcon className="w-4 h-4" />
-          New Scan
-        </button>
+        <div className="flex items-center gap-2.5">
+          <button
+            onClick={() => navigate('/redefine')}
+            className="flex items-center gap-2 px-3.5 py-2 rounded-xl text-xs font-semibold bg-purple-500/10 text-purple-300 hover:bg-purple-500/20 border border-purple-500/30 transition-all shadow-sm"
+          >
+            <SparklesIcon className="w-4 h-4 text-purple-400" />
+            AI Optimization
+          </button>
+          <button
+            onClick={() => navigate('/your-arch')}
+            className="btn-primary flex items-center gap-2 shadow-lg shadow-primary-500/20 text-xs py-2 px-4"
+          >
+            <ArrowPathIcon className="w-4 h-4" />
+            New Scan
+          </button>
+        </div>
       </div>
 
       {/* Hero Stats Row */}
@@ -149,68 +184,156 @@ export default function DashboardPage() {
         </div>
       </div>
 
+      {/* AI Executive Intelligence Briefing */}
+      {analysisResult && (
+        <div className="card bg-gradient-to-r from-purple-950/40 via-dark-800 to-dark-900 border-purple-500/30 p-5 relative overflow-hidden shadow-xl">
+          <div className="absolute top-0 right-0 w-80 h-full bg-gradient-to-l from-purple-500/10 to-transparent pointer-events-none" />
+          <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 relative z-10">
+            <div className="space-y-1.5 max-w-3xl">
+              <div className="flex items-center gap-2">
+                <span className="p-1.5 rounded-lg bg-purple-500/20 text-purple-400 border border-purple-500/30">
+                  <SparklesIcon className="w-4 h-4" />
+                </span>
+                <span className="text-xs font-semibold uppercase tracking-wider text-purple-400">
+                  Amazon Bedrock · Architecture Intelligence Briefing
+                </span>
+              </div>
+              <p className="text-sm text-gray-200 leading-relaxed">
+                ArchLens analyzed your deployed architecture against all 6 AWS Well-Architected Framework pillars.
+                {riskSummary?.critical_findings ? (
+                  <> Identified <strong className="text-red-400">{riskSummary.critical_findings} critical security & resilience risks</strong> requiring immediate remediation.</>
+                ) : (
+                  <> Your cloud architecture exhibits strong overall baseline alignment with AWS best practices.</>
+                )}
+                {totalRecommendations > 0 && (
+                  <> A prioritized catalog of <strong>{totalRecommendations} actionable optimizations</strong> is available with ready-to-deploy CloudFormation & Terraform templates.</>
+                )}
+              </p>
+            </div>
+            <button
+              onClick={() => navigate('/redefine')}
+              className="flex-shrink-0 flex items-center gap-2 px-4 py-2.5 rounded-xl bg-purple-600 text-white font-medium text-xs hover:bg-purple-500 transition-colors shadow-lg shadow-purple-600/20 self-start md:self-center"
+            >
+              <span>Review Recommendations</span>
+              <ArrowTrendingUpIcon className="w-4 h-4" />
+            </button>
+          </div>
+        </div>
+      )}
+
       {/* Onboarding Progress + Connected Account */}
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
-        {/* Progress Stepper */}
+        {/* Getting Started — completion checklist */}
         <div className="lg:col-span-2 card bg-gradient-to-r from-dark-800 to-dark-900 border-dark-600/50">
           <div className="flex items-center justify-between mb-4">
             <p className="text-sm font-semibold text-white">Getting Started</p>
             <span className="text-xs text-primary-400 font-bold bg-primary-500/10 px-2.5 py-1 rounded-full">
-              {completedSteps}/{steps.length}
+              {completedSteps}/{steps.length} completed
             </span>
           </div>
-          <div className="flex items-center">
-            {steps.map((step, idx) => (
-              <div key={step.label} className="flex items-center flex-1">
-                <div className="flex flex-col items-center flex-1">
-                  <div className={`w-10 h-10 rounded-xl flex items-center justify-center text-xs font-bold transition-all duration-500 ${
-                    step.done
-                      ? 'bg-gradient-to-br from-green-500 to-emerald-600 text-white shadow-lg shadow-green-500/25'
-                      : 'bg-dark-700 text-gray-500 border border-dark-600'
-                  }`}>
-                    {step.done ? <CheckCircleIcon className="w-5 h-5" /> : idx + 1}
-                  </div>
-                  <span className={`text-[11px] mt-2 font-medium ${step.done ? 'text-green-400' : 'text-gray-500'}`}>
+          {/* Horizontal step flow: completed = green check, active = amber
+              clock + "In progress", upcoming = numbered hollow circle.
+              Connector lines join every step. Works in dark and light themes. */}
+          <div className="flex items-start overflow-x-auto pb-1">
+            {steps.map((step, idx) => {
+              const firstPendingIdx = steps.findIndex((s) => !s.done);
+              const inProgress = step.active || (!step.done && idx === firstPendingIdx && !steps.some((s) => s.active));
+              // The connector BEFORE this step is green only if the previous
+              // step is complete.
+              const prevDone = idx > 0 && steps[idx - 1].done;
+              return (
+                <div key={step.label} className="flex flex-col items-center flex-1 min-w-[100px] relative">
+                  {/* Connector line (left half + right half) aligned to circle center */}
+                  {idx > 0 && (
+                    <span
+                      className={`absolute top-[18px] left-0 w-1/2 h-0.5 ${prevDone ? 'bg-green-500' : 'bg-gray-300 dark:bg-dark-600'}`}
+                    />
+                  )}
+                  {idx < steps.length - 1 && (
+                    <span
+                      className={`absolute top-[18px] right-0 w-1/2 h-0.5 ${step.done ? 'bg-green-500' : 'bg-gray-300 dark:bg-dark-600'}`}
+                    />
+                  )}
+                  {/* Node */}
+                  {step.done ? (
+                    <span className="relative z-10 w-9 h-9 rounded-full bg-green-500 flex items-center justify-center shadow-md shadow-green-500/20">
+                      <CheckCircleIcon className="w-6 h-6 text-white" />
+                    </span>
+                  ) : inProgress ? (
+                    <span className="relative z-10 w-9 h-9 rounded-full bg-amber-500/20 border-2 border-amber-500 flex items-center justify-center">
+                      <ClockIcon className="w-5 h-5 text-amber-500" />
+                    </span>
+                  ) : (
+                    <span className="relative z-10 w-9 h-9 rounded-full border-2 border-gray-300 dark:border-dark-600 bg-white dark:bg-dark-800 flex items-center justify-center text-xs font-semibold text-gray-400 dark:text-gray-500">
+                      {idx + 1}
+                    </span>
+                  )}
+                  {/* Label */}
+                  <span
+                    className={`text-[11px] font-medium leading-tight mt-2 px-1 text-center ${
+                      step.done
+                        ? 'text-green-600 dark:text-green-400'
+                        : inProgress
+                        ? 'text-amber-600 dark:text-amber-400'
+                        : 'text-gray-500 dark:text-gray-500'
+                    }`}
+                  >
                     {step.label}
                   </span>
+                  {inProgress && (
+                    <span className="text-[9px] text-amber-600 dark:text-amber-400/80 mt-0.5">In progress</span>
+                  )}
                 </div>
-                {idx < steps.length - 1 && (
-                  <div className={`h-0.5 w-full mx-2 rounded-full transition-all duration-500 ${
-                    step.done ? 'bg-gradient-to-r from-green-500 to-emerald-400' : 'bg-dark-700'
-                  }`} />
-                )}
-              </div>
-            ))}
+              );
+            })}
           </div>
         </div>
 
-        {/* Connected Account */}
+        {/* Connected Account — detailed */}
         <div className="card bg-gradient-to-br from-dark-800 to-dark-900 border-dark-600/50">
           {(connectedAccounts.length > 0 || scanResult) ? (
             <div>
-              <div className="flex items-center justify-between mb-3">
+              <div className="flex items-center justify-between mb-4">
                 <p className="text-xs text-gray-500 font-semibold uppercase tracking-wider">Connected Account</p>
                 <span className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full bg-green-500/10 text-green-400 text-[10px] font-semibold">
                   <span className="w-1.5 h-1.5 rounded-full bg-green-400 animate-pulse" />
                   Active
                 </span>
               </div>
-              <div className="flex items-center gap-3">
-                <div className="p-2.5 bg-gradient-to-br from-blue-500/20 to-cyan-500/10 rounded-xl border border-blue-500/20">
-                  <GlobeAltIcon className="w-5 h-5 text-blue-400" />
+              <dl className="space-y-2.5 text-sm">
+                <div className="flex justify-between gap-2">
+                  <dt className="text-gray-500">Account Name</dt>
+                  <dd className="text-white font-medium text-right truncate">
+                    {connectedAccounts.find(a => a.id === activeAccountId)?.accountName || connectedAccounts[0]?.accountName || 'AWS Account'}
+                  </dd>
                 </div>
-                <div>
-                  <p className="text-sm font-semibold text-white">
-                    {connectedAccounts.find(a => a.id === activeAccountId)?.accountName || 'AWS Account'}
-                  </p>
-                  <p className="text-xs text-gray-500">{scanResult?.accountId || ''}</p>
+                <div className="flex justify-between gap-2">
+                  <dt className="text-gray-500">Account ID</dt>
+                  <dd className="text-gray-300 text-right">{scanResult?.accountId || connectedAccounts[0]?.accountId || '—'}</dd>
                 </div>
-              </div>
-              {scanResult && (
-                <p className="text-[10px] text-gray-500 mt-3 pt-3 border-t border-dark-700">
-                  Scanned: {new Date(scanResult.timestamp).toLocaleString()}
-                </p>
-              )}
+                <div className="flex justify-between gap-2">
+                  <dt className="text-gray-500">Region</dt>
+                  <dd className="text-gray-300 text-right">
+                    {scanResult
+                      ? (scanResult.regions && scanResult.regions.length > 1
+                          ? `Multi-region (${scanResult.regions.length})`
+                          : (scanResult.regions?.[0] || '—'))
+                      : '—'}
+                  </dd>
+                </div>
+                <div className="flex justify-between gap-2">
+                  <dt className="text-gray-500">Last Scan</dt>
+                  <dd className="text-gray-300 text-right text-xs">
+                    {scanResult ? new Date(scanResult.timestamp).toLocaleString() : 'Not scanned yet'}
+                  </dd>
+                </div>
+              </dl>
+              <button
+                onClick={() => navigate('/your-arch')}
+                className="w-full mt-4 text-xs text-primary-400 hover:text-primary-300 font-medium border border-dark-700 rounded-lg py-2 transition-colors hover:bg-dark-800"
+              >
+                View Account
+              </button>
             </div>
           ) : (
             <div className="text-center py-4">
@@ -398,13 +521,79 @@ export default function DashboardPage() {
                 >
                   <img
                     src={getServiceIconPath(type, darkMode)}
-                    alt={type}
-                    className="w-9 h-9 mx-auto mb-2"
+                    alt=""
+                    aria-hidden="true"
+                    className="w-9 h-9 mx-auto mb-2 object-contain"
+                    onError={(e) => { (e.currentTarget as HTMLImageElement).style.visibility = 'hidden'; }}
                   />
                   <p className="text-2xl font-bold text-white">{count as number}</p>
                   <p className="text-xs text-gray-500 mt-1 font-medium">{type}</p>
                 </div>
               ))}
+          </div>
+        </div>
+      )}
+
+      {/* Top Priority Recommendations */}
+      {analysisResult?.analysis?.recommendations && analysisResult.analysis.recommendations.length > 0 && (
+        <div className="card bg-gradient-to-br from-dark-800 to-dark-900 border-dark-700/60">
+          <div className="flex items-center justify-between mb-4">
+            <div>
+              <h2 className="text-base font-semibold text-white flex items-center gap-2">
+                <SparklesIcon className="w-5 h-5 text-purple-400" />
+                Priority Recommendations
+              </h2>
+              <p className="text-xs text-gray-400 mt-0.5">Top AI-identified optimization opportunities requiring engineering attention</p>
+            </div>
+            <button
+              onClick={() => navigate('/redefine')}
+              className="text-xs text-purple-400 hover:text-purple-300 font-semibold flex items-center gap-1"
+            >
+              View all ({analysisResult.analysis.recommendations.length}) →
+            </button>
+          </div>
+          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3.5">
+            {analysisResult.analysis.recommendations.slice(0, 3).map((rec) => {
+              const isCrit = rec.priority === 'CRITICAL' || rec.priority === 'HIGH';
+              return (
+                <div
+                  key={rec.id}
+                  onClick={() => navigate('/redefine')}
+                  className="p-4 rounded-xl bg-dark-900/80 border border-dark-700/70 hover:border-purple-500/40 hover:bg-dark-800/60 transition-all cursor-pointer group flex flex-col justify-between"
+                >
+                  <div>
+                    <div className="flex items-center justify-between gap-2 mb-2">
+                      <span className={`text-[10px] font-bold uppercase tracking-wider px-2 py-0.5 rounded-full border ${
+                        rec.priority === 'CRITICAL'
+                          ? 'bg-red-500/10 text-red-400 border-red-500/30'
+                          : rec.priority === 'HIGH'
+                          ? 'bg-amber-500/10 text-amber-400 border-amber-500/30'
+                          : 'bg-blue-500/10 text-blue-400 border-blue-500/30'
+                      }`}>
+                        {rec.priority}
+                      </span>
+                      <span className="text-[11px] text-gray-400 font-medium truncate">{rec.pillar}</span>
+                    </div>
+                    <h3 className="text-sm font-semibold text-white group-hover:text-purple-300 transition-colors line-clamp-1 mb-1">
+                      {rec.title}
+                    </h3>
+                    <p className="text-xs text-gray-400 line-clamp-2 leading-relaxed">
+                      {rec.description}
+                    </p>
+                  </div>
+                  <div className="flex items-center justify-between pt-3 mt-3 border-t border-dark-700/50 text-[11px]">
+                    {rec.monthly_cost_impact > 0 ? (
+                      <span className="text-emerald-400 font-medium">Save ${rec.monthly_cost_impact}/mo</span>
+                    ) : (
+                      <span className="text-gray-400">{rec.effort_hours || 2}h effort</span>
+                    )}
+                    <span className="text-purple-400 font-medium group-hover:translate-x-0.5 transition-transform inline-flex items-center gap-1">
+                      Review <ArrowTrendingUpIcon className="w-3 h-3" />
+                    </span>
+                  </div>
+                </div>
+              );
+            })}
           </div>
         </div>
       )}
@@ -425,11 +614,13 @@ export default function DashboardPage() {
             <table className="w-full text-sm">
               <thead>
                 <tr className="border-b border-dark-700/50">
-                  <th className="text-left py-3 px-4 text-xs text-gray-500 font-semibold uppercase tracking-wider">Sl. No.</th>
-                  <th className="text-left py-3 px-4 text-xs text-gray-500 font-semibold uppercase tracking-wider">Account</th>
+                  <th className="text-left py-3 px-4 text-xs text-gray-500 font-semibold uppercase tracking-wider">Scan ID</th>
+                  <th className="text-left py-3 px-4 text-xs text-gray-500 font-semibold uppercase tracking-wider">Account Name</th>
+                  <th className="text-left py-3 px-4 text-xs text-gray-500 font-semibold uppercase tracking-wider">Account ID</th>
                   <th className="text-left py-3 px-4 text-xs text-gray-500 font-semibold uppercase tracking-wider">Region</th>
                   <th className="text-left py-3 px-4 text-xs text-gray-500 font-semibold uppercase tracking-wider">Resources</th>
-                  <th className="text-left py-3 px-4 text-xs text-gray-500 font-semibold uppercase tracking-wider">Date</th>
+                  <th className="text-left py-3 px-4 text-xs text-gray-500 font-semibold uppercase tracking-wider">Date &amp; Time</th>
+                  <th className="text-left py-3 px-4 text-xs text-gray-500 font-semibold uppercase tracking-wider">Status</th>
                 </tr>
               </thead>
               <tbody>
@@ -439,13 +630,11 @@ export default function DashboardPage() {
                   const delta = prev ? scan.resourceCount - prev.resourceCount : null;
                   return (
                   <tr key={scan.scanNumber} className="border-b border-dark-800/50 hover:bg-dark-800/30 transition-colors">
-                    <td className="py-3 px-4 text-primary-400 font-bold">{scan.scanNumber}</td>
-                    <td className="py-3 px-4">
-                      <p className="text-white font-medium">{scan.accountName}</p>
-                      <p className="text-[10px] text-gray-500">{scan.accountId}</p>
-                    </td>
-                    <td className="py-3 px-4 text-gray-300 font-medium">{scan.region}</td>
-                    <td className="py-3 px-4">
+                    <td className="py-3 px-4 text-primary-400 font-bold whitespace-nowrap">{scan.scanNumber}</td>
+                    <td className="py-3 px-4 text-white font-medium whitespace-nowrap">{scan.accountName}</td>
+                    <td className="py-3 px-4 text-gray-400 text-xs whitespace-nowrap">{scan.accountId}</td>
+                    <td className="py-3 px-4 text-gray-300 font-medium whitespace-nowrap">{scan.region}</td>
+                    <td className="py-3 px-4 whitespace-nowrap">
                       <span className="inline-flex items-center gap-2">
                         <span className="inline-flex items-center px-2.5 py-1 rounded-full text-xs font-semibold bg-blue-500/10 text-blue-400">
                           {scan.resourceCount}
@@ -458,7 +647,13 @@ export default function DashboardPage() {
                         )}
                       </span>
                     </td>
-                    <td className="py-3 px-4 text-gray-400 text-xs">{new Date(scan.timestamp).toLocaleString()}</td>
+                    <td className="py-3 px-4 text-gray-400 text-xs whitespace-nowrap">{formatScanTime(scan.timestamp)}</td>
+                    <td className="py-3 px-4 whitespace-nowrap">
+                      <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-medium bg-green-500/10 text-green-400">
+                        <span className="w-1.5 h-1.5 rounded-full bg-green-400" />
+                        Completed
+                      </span>
+                    </td>
                   </tr>
                   );
                 })}

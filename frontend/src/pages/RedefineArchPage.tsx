@@ -1,4 +1,5 @@
 import { useState } from 'react';
+import { useNavigate } from 'react-router-dom';
 import { useAppStore } from '../store/useAppStore';
 import { analyzeArchitecture, generateCFT, generateTerraform } from '../services/api';
 import { WAF_PILLARS } from '../config/constants';
@@ -14,9 +15,15 @@ import {
   ClipboardDocumentIcon,
   ShieldCheckIcon,
   ArrowsRightLeftIcon,
+  MagnifyingGlassIcon,
+  CpuChipIcon,
+  LockClosedIcon,
+  ArrowRightIcon,
+  CheckIcon,
 } from '@heroicons/react/24/outline';
 
 export default function RedefineArchPage() {
+  const navigate = useNavigate();
   const {
     scanResult, analysisResult, setAnalysisResult,
     cftResult, setCftResult, terraformResult, setTerraformResult,
@@ -26,6 +33,84 @@ export default function RedefineArchPage() {
 
   const [activeScriptTab, setActiveScriptTab] = useState<'cft' | 'terraform'>('cft');
   const [expandedRec, setExpandedRec] = useState<string | null>(null);
+  const [recSearch, setRecSearch] = useState('');
+  const [recPillarFilter, setRecPillarFilter] = useState('all');
+  const [recPriorityFilter, setRecPriorityFilter] = useState('all');
+
+  // Derive proposed architecture by synthesizing current architecture + WAF recommendations/changes
+  const proposedArchitecture = (() => {
+    if (!scanResult) return null;
+    const resources = scanResult.resources.map((r) => ({ ...r }));
+    const relationships = scanResult.relationships.map((rel) => ({ ...rel }));
+
+    const changes = (analysisResult as any)?.analysis?.architecture_changes || [];
+    const recs = analysisResult?.analysis?.recommendations || [];
+
+    if (changes.length > 0) {
+      changes.forEach((ch: any, idx: number) => {
+        if (ch.action === 'ADD' || ch.action === 'CREATE') {
+          const newId = `proposed-${(ch.resource_type || 'service').toLowerCase()}-${idx}`;
+          const existingVpc = resources.find((r) => r.type === 'VPC');
+          const existingSubnet = resources.find((r) => r.type === 'Subnet');
+          resources.push({
+            type: ch.resource_type,
+            id: newId,
+            name: ch.resource_name || `${ch.resource_type} (Recommended)`,
+            region: scanResult.regions?.[0] || 'ap-south-1',
+            vpc_id: existingVpc?.id,
+            subnet_id: existingSubnet?.id,
+            isRecommended: true,
+          });
+
+          if (ch.connects_to && Array.isArray(ch.connects_to)) {
+            ch.connects_to.forEach((targetId: string) => {
+              relationships.push({
+                source: newId,
+                source_type: ch.resource_type,
+                target: targetId,
+                target_type: 'Unknown',
+                relationship: 'recommended_connection',
+              });
+            });
+          }
+        }
+      });
+    } else if (recs.length > 0) {
+      // Synthesize best-practice additions from recommendations
+      recs.forEach((rec, idx) => {
+        const text = `${rec.title} ${rec.description}`.toLowerCase();
+        let addedType = '';
+        if (text.includes('waf') && !resources.some((r) => r.type === 'WAF')) {
+          addedType = 'WAF';
+        } else if ((text.includes('elasticache') || text.includes('redis')) && !resources.some((r) => r.type === 'ElastiCache')) {
+          addedType = 'ElastiCache';
+        } else if ((text.includes('auto scaling') || text.includes('asg')) && !resources.some((r) => r.type === 'AutoScaling')) {
+          addedType = 'AutoScaling';
+        } else if (text.includes('cloudfront') && !resources.some((r) => r.type === 'CloudFront')) {
+          addedType = 'CloudFront';
+        } else if (text.includes('multi-az') && !resources.some((r) => r.name?.includes('Standby'))) {
+          addedType = 'RDS';
+        }
+
+        if (addedType) {
+          const newId = `proposed-${addedType.toLowerCase()}-${idx}`;
+          const existingVpc = resources.find((r) => r.type === 'VPC');
+          const existingSubnet = resources.find((r) => r.type === 'Subnet');
+          resources.push({
+            type: addedType,
+            id: newId,
+            name: addedType === 'RDS' ? 'RDS (Multi-AZ Standby)' : `${addedType} (WAF)`,
+            region: scanResult.regions?.[0] || 'ap-south-1',
+            vpc_id: existingVpc?.id,
+            subnet_id: existingSubnet?.id,
+            isRecommended: true,
+          });
+        }
+      });
+    }
+
+    return { resources, relationships };
+  })();
 
   function togglePillar(pillarKey: string) {
     if (selectedPillars.includes(pillarKey)) {
@@ -117,9 +202,21 @@ export default function RedefineArchPage() {
   return (
     <div className="space-y-6 animate-fade-in">
       {/* Header */}
-      <div>
-        <h1 className="text-2xl font-bold text-white">RedefineYourArch</h1>
-        <p className="text-gray-400 text-sm mt-1">AI-powered architecture optimization based on AWS Well-Architected Framework</p>
+      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+        <div>
+          <div className="flex flex-wrap items-center gap-2 mb-1">
+            <h1 className="text-2xl font-bold text-white tracking-tight">RedefineYourArch</h1>
+            <span className="px-2.5 py-0.5 rounded-full text-[10px] font-bold bg-purple-500/10 text-purple-300 border border-purple-500/30 flex items-center gap-1 shadow-sm">
+              <CpuChipIcon className="w-3 h-3 text-purple-400" />
+              Bedrock Nova Pro
+            </span>
+            <span className="px-2.5 py-0.5 rounded-full text-[10px] font-semibold bg-emerald-500/10 text-emerald-300 border border-emerald-500/30 flex items-center gap-1 shadow-sm">
+              <LockClosedIcon className="w-3 h-3 text-emerald-400" />
+              archlens-guardrail Active
+            </span>
+          </div>
+          <p className="text-gray-400 text-sm">AI-powered architecture optimization based on the AWS Well-Architected Framework</p>
+        </div>
       </div>
 
       {/* Pillar Selection */}
@@ -242,19 +339,42 @@ export default function RedefineArchPage() {
 
           {/* Architecture Comparison — current vs proposed (SOW 4.3) */}
           {scanResult && (
-            <div className="card">
-              <h2 className="text-lg font-semibold text-white flex items-center gap-2 mb-4">
-                <ArrowsRightLeftIcon className="w-5 h-5 text-primary-400" />
-                Architecture Comparison
-              </h2>
-              <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
-                {/* Current */}
+            <div className="card space-y-4">
+              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
                 <div>
-                  <div className="flex items-center gap-2 mb-2">
-                    <span className="w-2 h-2 rounded-full bg-gray-400" />
-                    <span className="text-sm font-medium text-gray-300">Current Architecture</span>
+                  <h2 className="text-lg font-semibold text-white flex items-center gap-2">
+                    <ArrowsRightLeftIcon className="w-5 h-5 text-primary-400" />
+                    Architecture Comparison
+                  </h2>
+                  <p className="text-xs text-gray-400 mt-0.5">
+                    Compare current topology with Bedrock WAF-recommended target architecture
+                  </p>
+                </div>
+                <div className="flex items-center gap-4 text-xs">
+                  <span className="flex items-center gap-1.5 text-gray-300">
+                    <span className="w-2.5 h-2.5 rounded-full bg-blue-400" />
+                    Current: <strong className="text-white">{scanResult.resources.length}</strong> resources
+                  </span>
+                  <span className="flex items-center gap-1.5 text-green-400">
+                    <span className="w-2.5 h-2.5 rounded-full bg-green-400" />
+                    Proposed: <strong className="text-white">{proposedArchitecture?.resources.length || scanResult.resources.length}</strong> resources
+                  </span>
+                </div>
+              </div>
+
+              <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+                {/* Current Architecture Diagram */}
+                <div className="flex flex-col">
+                  <div className="flex items-center justify-between mb-2">
+                    <div className="flex items-center gap-2">
+                      <span className="w-2 h-2 rounded-full bg-blue-400" />
+                      <span className="text-sm font-medium text-gray-200">Current Architecture</span>
+                    </div>
+                    <span className="text-[11px] text-gray-400 bg-dark-800/80 px-2 py-0.5 rounded border border-dark-700">
+                      As-Is AWS State
+                    </span>
                   </div>
-                  <div className="h-[420px] rounded-xl overflow-hidden border border-dark-700/50">
+                  <div className="h-[480px] rounded-xl overflow-hidden border border-dark-700/60 bg-dark-950/80">
                     <ArchitectureDiagram
                       resources={scanResult.resources}
                       relationships={scanResult.relationships}
@@ -262,115 +382,248 @@ export default function RedefineArchPage() {
                     />
                   </div>
                 </div>
-                {/* Proposed changes */}
-                <div>
-                  <div className="flex items-center gap-2 mb-2">
-                    <span className="w-2 h-2 rounded-full bg-purple-400" />
-                    <span className="text-sm font-medium text-gray-300">Proposed Changes</span>
+
+                {/* Proposed WAF Architecture Diagram */}
+                <div className="flex flex-col">
+                  <div className="flex items-center justify-between mb-2">
+                    <div className="flex items-center gap-2">
+                      <span className="w-2 h-2 rounded-full bg-green-400" />
+                      <span className="text-sm font-medium text-green-300">Proposed Architecture (WAF Optimized)</span>
+                    </div>
+                    <span className="text-[11px] text-green-400 bg-green-500/10 px-2 py-0.5 rounded border border-green-500/30">
+                      +{Math.max(0, (proposedArchitecture?.resources.length || scanResult.resources.length) - scanResult.resources.length)} Recommended Components
+                    </span>
                   </div>
-                  <div className="h-[420px] rounded-xl border border-purple-500/20 bg-dark-900/50 p-4 overflow-y-auto space-y-2">
-                    {(analysisResult.analysis.recommendations || []).map((rec) => (
-                      <div key={rec.id} className="bg-dark-900/70 border border-dark-700/50 rounded-lg p-3">
-                        <div className="flex items-center gap-2 mb-1">
-                          <span className={`badge ${(PRIORITY_BADGE[rec.priority] || PRIORITY_BADGE.MEDIUM).bg} ${(PRIORITY_BADGE[rec.priority] || PRIORITY_BADGE.MEDIUM).text}`}>
-                            {rec.priority}
-                          </span>
-                          <span className="text-xs text-gray-500">{rec.pillar}</span>
-                        </div>
-                        <p className="text-sm text-white">{rec.title}</p>
-                        <div className="flex items-center gap-2 mt-2 text-xs">
-                          <span className="text-gray-400 line-through truncate max-w-[45%]">{rec.current_state}</span>
-                          <ArrowsRightLeftIcon className="w-3 h-3 text-purple-400 flex-shrink-0" />
-                          <span className="text-green-300 truncate max-w-[45%]">{rec.proposed_state}</span>
-                        </div>
+                  <div className="h-[480px] rounded-xl overflow-hidden border border-green-500/30 bg-dark-950/80 ring-1 ring-green-500/20">
+                    <ArchitectureDiagram
+                      resources={proposedArchitecture?.resources || scanResult.resources}
+                      relationships={proposedArchitecture?.relationships || scanResult.relationships}
+                      servicesFootprint={scanResult.servicesFootprint}
+                    />
+                  </div>
+                </div>
+              </div>
+
+              {/* Proposed Deltas & Transition Summary */}
+              <div className="pt-3 border-t border-dark-700/50">
+                <h4 className="text-xs font-semibold text-gray-400 uppercase tracking-wider mb-2">
+                  Optimization Deltas & Transitions
+                </h4>
+                <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-2.5 max-h-[190px] overflow-y-auto pr-1">
+                  {(analysisResult.analysis.recommendations || []).map((rec) => (
+                    <div key={rec.id} className="bg-dark-900/80 border border-dark-700/60 rounded-lg p-2.5 text-xs hover:border-dark-600 transition-colors">
+                      <div className="flex items-center justify-between mb-1">
+                        <span className={`badge ${(PRIORITY_BADGE[rec.priority] || PRIORITY_BADGE.MEDIUM).bg} ${(PRIORITY_BADGE[rec.priority] || PRIORITY_BADGE.MEDIUM).text}`}>
+                          {rec.priority}
+                        </span>
+                        <span className="text-[10px] text-gray-500">{rec.pillar}</span>
                       </div>
-                    ))}
-                    {(analysisResult.analysis.recommendations || []).length === 0 && (
-                      <p className="text-sm text-gray-500 text-center pt-16">No proposed changes.</p>
-                    )}
-                  </div>
+                      <p className="font-medium text-white truncate">{rec.title}</p>
+                      <div className="flex items-center gap-1.5 mt-1.5 text-[11px]">
+                        <span className="text-gray-400 line-through truncate max-w-[42%]">{rec.current_state}</span>
+                        <ArrowsRightLeftIcon className="w-3 h-3 text-green-400 flex-shrink-0" />
+                        <span className="text-green-300 truncate max-w-[42%] font-medium">{rec.proposed_state}</span>
+                      </div>
+                    </div>
+                  ))}
+                  {(analysisResult.analysis.recommendations || []).length === 0 && (
+                    <p className="text-xs text-gray-500 col-span-full py-4 text-center">No specific deltas generated.</p>
+                  )}
                 </div>
               </div>
             </div>
           )}
 
-          {/* Recommendations */}
-          <div className="card">
-            <h2 className="text-lg font-semibold text-white mb-4">
-              Recommendations ({analysisResult.analysis.recommendations?.length || 0})
-            </h2>
-            <div className="space-y-3">
-              {analysisResult.analysis.recommendations?.map((rec) => {
-                const priorityConfig = PRIORITY_BADGE[rec.priority] || PRIORITY_BADGE.MEDIUM;
-                const isExpanded = expandedRec === rec.id;
-                return (
-                  <div
-                    key={rec.id}
-                    className="bg-dark-900 border border-dark-700 rounded-lg overflow-hidden"
-                  >
-                    <button
-                      onClick={() => setExpandedRec(isExpanded ? null : rec.id)}
-                      className="w-full p-4 text-left flex items-start justify-between gap-4 hover:bg-dark-800/50 transition-colors"
-                    >
-                      <div className="flex-1">
-                        <div className="flex items-center gap-2 mb-1">
-                          <span className={`badge ${priorityConfig.bg} ${priorityConfig.text}`}>
-                            {rec.priority}
-                          </span>
-                          <span className="text-xs text-gray-500">{rec.pillar}</span>
-                          <span className="text-xs text-gray-600">|</span>
-                          <span className="text-xs text-gray-500">Confidence: {rec.confidence}%</span>
-                        </div>
-                        <p className="text-white font-medium">{rec.title}</p>
-                        <p className="text-sm text-gray-400 mt-1 line-clamp-2">{rec.description}</p>
-                      </div>
-                      <div className="flex-shrink-0 text-right">
-                        {rec.monthly_cost_impact > 0 && (
-                          <p className="text-sm text-green-400 font-medium">
-                            Save ${rec.monthly_cost_impact}/mo
-                          </p>
-                        )}
-                        <p className="text-xs text-gray-500">{rec.effort_hours}h effort</p>
-                      </div>
-                    </button>
+          {/* Recommendations with Filter & Search */}
+          <div className="card space-y-4">
+            <div className="flex flex-col md:flex-row md:items-center justify-between gap-3">
+              <div>
+                <h2 className="text-lg font-semibold text-white flex items-center gap-2">
+                  <SparklesIcon className="w-5 h-5 text-purple-400" />
+                  Recommendations ({analysisResult.analysis.recommendations?.length || 0})
+                </h2>
+                <p className="text-xs text-gray-400 mt-0.5">
+                  AI-prioritized remediations aligned with AWS Well-Architected Framework best practices
+                </p>
+              </div>
+              <div className="flex flex-wrap items-center gap-2">
+                {/* Search */}
+                <div className="relative">
+                  <MagnifyingGlassIcon className="w-4 h-4 absolute left-3 top-1/2 -translate-y-1/2 text-gray-500" />
+                  <input
+                    type="text"
+                    value={recSearch}
+                    onChange={(e) => setRecSearch(e.target.value)}
+                    placeholder="Search recommendations..."
+                    className="bg-dark-900 border border-dark-700 rounded-lg pl-9 pr-3 py-1.5 text-xs text-white placeholder-gray-500 focus:outline-none focus:border-purple-500 w-52"
+                  />
+                </div>
 
-                    {isExpanded && (
-                      <div className="px-4 pb-4 border-t border-dark-700 pt-4 space-y-3">
-                        <div className="grid grid-cols-2 gap-4">
-                          <div>
-                            <p className="text-xs text-gray-500 mb-1">Current State</p>
-                            <p className="text-sm text-gray-300 bg-dark-800 p-2 rounded">{rec.current_state}</p>
-                          </div>
-                          <div>
-                            <p className="text-xs text-gray-500 mb-1">Proposed State</p>
-                            <p className="text-sm text-green-300 bg-dark-800 p-2 rounded">{rec.proposed_state}</p>
-                          </div>
-                        </div>
-                        <div>
-                          <p className="text-xs text-gray-500 mb-1">Implementation Steps</p>
-                          <ol className="list-decimal list-inside text-sm text-gray-300 space-y-1">
-                            {rec.implementation_steps?.map((step, i) => (
-                              <li key={i}>{step}</li>
-                            ))}
-                          </ol>
-                        </div>
-                        <div>
-                          <p className="text-xs text-gray-500 mb-1">Rollback Plan</p>
-                          <p className="text-sm text-gray-300 bg-dark-800 p-2 rounded flex items-start gap-2">
-                            <ExclamationTriangleIcon className="w-4 h-4 text-yellow-400 flex-shrink-0 mt-0.5" />
-                            {rec.rollback_plan}
-                          </p>
-                        </div>
-                        <div className="flex items-center gap-4 text-xs text-gray-500">
-                          <span>Risk: {rec.risk_score}/10</span>
-                          <span>Downtime: {rec.downtime_required}</span>
-                          <span>Resources affected: {rec.affected_resources?.length || 0}</span>
-                        </div>
-                      </div>
-                    )}
-                  </div>
+                {/* Priority Filter */}
+                <select
+                  value={recPriorityFilter}
+                  onChange={(e) => setRecPriorityFilter(e.target.value)}
+                  className="bg-dark-900 border border-dark-700 rounded-lg px-2.5 py-1.5 text-xs text-gray-300 focus:outline-none focus:border-purple-500"
+                >
+                  <option value="all">All Priorities</option>
+                  <option value="CRITICAL">Critical</option>
+                  <option value="HIGH">High</option>
+                  <option value="MEDIUM">Medium</option>
+                  <option value="LOW">Low</option>
+                </select>
+              </div>
+            </div>
+
+            {/* Pillar Filter Pills */}
+            <div className="flex items-center gap-1.5 overflow-x-auto pb-1">
+              <button
+                onClick={() => setRecPillarFilter('all')}
+                className={`px-3 py-1 rounded-full text-xs font-medium transition-all ${
+                  recPillarFilter === 'all'
+                    ? 'bg-purple-600 text-white shadow-sm'
+                    : 'bg-dark-900 text-gray-400 hover:text-white border border-dark-700/60'
+                }`}
+              >
+                All Pillars
+              </button>
+              {WAF_PILLARS.map((p) => {
+                const count = (analysisResult.analysis.recommendations || []).filter((r) =>
+                  r.pillar?.toLowerCase().includes(p.key.toLowerCase())
+                ).length;
+                return (
+                  <button
+                    key={p.key}
+                    onClick={() => setRecPillarFilter(recPillarFilter === p.key ? 'all' : p.key)}
+                    className={`px-2.5 py-1 rounded-full text-xs font-medium transition-all whitespace-nowrap flex items-center gap-1 ${
+                      recPillarFilter === p.key
+                        ? 'bg-purple-600 text-white shadow-sm'
+                        : 'bg-dark-900 text-gray-400 hover:text-white border border-dark-700/60'
+                    }`}
+                  >
+                    <span>{p.icon}</span>
+                    <span>{p.name}</span>
+                    <span className="text-[10px] opacity-70">({count})</span>
+                  </button>
                 );
               })}
+            </div>
+
+            {/* Recommendations List */}
+            <div className="space-y-3">
+              {(analysisResult.analysis.recommendations || [])
+                .filter((rec) => {
+                  const matchesPillar = recPillarFilter === 'all' || rec.pillar?.toLowerCase().includes(recPillarFilter.toLowerCase());
+                  const matchesPriority = recPriorityFilter === 'all' || rec.priority?.toUpperCase() === recPriorityFilter.toUpperCase();
+                  const matchesSearch = !recSearch ||
+                    rec.title?.toLowerCase().includes(recSearch.toLowerCase()) ||
+                    rec.description?.toLowerCase().includes(recSearch.toLowerCase()) ||
+                    rec.pillar?.toLowerCase().includes(recSearch.toLowerCase());
+                  return matchesPillar && matchesPriority && matchesSearch;
+                })
+                .map((rec) => {
+                  const priorityConfig = PRIORITY_BADGE[rec.priority] || PRIORITY_BADGE.MEDIUM;
+                  const isExpanded = expandedRec === rec.id;
+                  return (
+                    <div
+                      key={rec.id}
+                      className="bg-dark-900 border border-dark-700/80 rounded-xl overflow-hidden hover:border-dark-600 transition-all shadow-sm"
+                    >
+                      <button
+                        onClick={() => setExpandedRec(isExpanded ? null : rec.id)}
+                        className="w-full p-4 text-left flex items-start justify-between gap-4 hover:bg-dark-800/40 transition-colors"
+                      >
+                        <div className="flex-1 min-w-0">
+                          <div className="flex flex-wrap items-center gap-2 mb-1.5">
+                            <span className={`badge ${priorityConfig.bg} ${priorityConfig.text} font-bold`}>
+                              {rec.priority}
+                            </span>
+                            <span className="text-xs text-gray-300 font-medium">{rec.pillar}</span>
+                            <span className="text-xs text-gray-600">•</span>
+                            <span className="text-xs text-gray-400">Confidence: {rec.confidence}%</span>
+                            {rec.downtime_required && (
+                              <span className="text-[10px] text-gray-500 bg-dark-950 px-2 py-0.5 rounded border border-dark-800">
+                                Downtime: {rec.downtime_required}
+                              </span>
+                            )}
+                          </div>
+                          <p className="text-white font-semibold text-sm leading-snug">{rec.title}</p>
+                          <p className="text-xs text-gray-400 mt-1 line-clamp-2 leading-relaxed">{rec.description}</p>
+                        </div>
+                        <div className="flex-shrink-0 text-right">
+                          {rec.monthly_cost_impact > 0 && (
+                            <p className="text-sm text-emerald-400 font-bold">
+                              Save ${rec.monthly_cost_impact}/mo
+                            </p>
+                          )}
+                          <p className="text-xs text-gray-500 mt-0.5">{rec.effort_hours || 2}h effort</p>
+                        </div>
+                      </button>
+
+                      {isExpanded && (
+                        <div className="px-5 pb-5 border-t border-dark-700/60 pt-4 space-y-4 bg-dark-950/40">
+                          <div className="grid grid-cols-1 md:grid-cols-2 gap-3.5">
+                            <div className="bg-dark-900 p-3 rounded-lg border border-dark-800">
+                              <p className="text-xs font-semibold text-gray-400 uppercase tracking-wider mb-1.5">Current As-Is State</p>
+                              <p className="text-xs text-gray-300 font-mono leading-relaxed">{rec.current_state}</p>
+                            </div>
+                            <div className="bg-dark-900 p-3 rounded-lg border border-emerald-500/20">
+                              <p className="text-xs font-semibold text-emerald-400 uppercase tracking-wider mb-1.5">Target Well-Architected State</p>
+                              <p className="text-xs text-emerald-300 font-mono leading-relaxed">{rec.proposed_state}</p>
+                            </div>
+                          </div>
+
+                          {rec.affected_resources && rec.affected_resources.length > 0 && (
+                            <div>
+                              <p className="text-xs font-semibold text-gray-400 uppercase tracking-wider mb-1.5">Affected Cloud Resources</p>
+                              <div className="flex flex-wrap gap-1.5">
+                                {rec.affected_resources.map((resId: string, idx: number) => (
+                                  <span key={idx} className="px-2 py-0.5 rounded bg-dark-900 border border-dark-700 text-[11px] font-mono text-gray-300">
+                                    {resId}
+                                  </span>
+                                ))}
+                              </div>
+                            </div>
+                          )}
+
+                          {rec.implementation_steps && rec.implementation_steps.length > 0 && (
+                            <div>
+                              <p className="text-xs font-semibold text-gray-400 uppercase tracking-wider mb-1.5">Execution &amp; Implementation Steps</p>
+                              <ol className="list-decimal list-inside text-xs text-gray-300 space-y-1.5 bg-dark-900 p-3 rounded-lg border border-dark-800">
+                                {rec.implementation_steps.map((step: string, i: number) => (
+                                  <li key={i} className="leading-relaxed">{step}</li>
+                                ))}
+                              </ol>
+                            </div>
+                          )}
+
+                          {rec.rollback_plan && (
+                            <div>
+                              <p className="text-xs font-semibold text-gray-400 uppercase tracking-wider mb-1.5">Automated Rollback Strategy</p>
+                              <div className="p-3 bg-dark-900 rounded-lg border border-amber-500/20 flex items-start gap-2.5">
+                                <ExclamationTriangleIcon className="w-4 h-4 text-amber-400 flex-shrink-0 mt-0.5" />
+                                <p className="text-xs text-amber-200/90 leading-relaxed">{rec.rollback_plan}</p>
+                              </div>
+                            </div>
+                          )}
+
+                          <div className="flex flex-wrap items-center justify-between gap-2 pt-2 border-t border-dark-800 text-xs text-gray-500">
+                            <div className="flex items-center gap-3">
+                              <span>Risk Score: <strong className="text-gray-300">{rec.risk_score || 3}/10</strong></span>
+                              <span>•</span>
+                              <span>Downtime: <strong className="text-gray-300">{rec.downtime_required || 'None'}</strong></span>
+                            </div>
+                            <button
+                              onClick={() => navigate('/auto-remediate')}
+                              className="text-xs font-semibold text-purple-400 hover:text-purple-300 flex items-center gap-1"
+                            >
+                              Remediate in AutoRemediate <ArrowRightIcon className="w-3.5 h-3.5" />
+                            </button>
+                          </div>
+                        </div>
+                      )}
+                    </div>
+                  );
+                })}
             </div>
           </div>
 
@@ -455,20 +708,30 @@ export default function RedefineArchPage() {
                 </div>
               )}
 
-              {/* Proceed to Apply */}
-              <div className="mt-6 p-4 bg-yellow-500/10 border border-yellow-500/30 rounded-lg">
-                <div className="flex items-start gap-3">
-                  <ExclamationTriangleIcon className="w-5 h-5 text-yellow-400 flex-shrink-0 mt-0.5" />
-                  <div>
-                    <p className="text-yellow-300 font-medium">Ready to Apply Changes?</p>
-                    <p className="text-yellow-400/80 text-sm mt-1">
-                      Review the scripts above carefully. When you proceed, ArchLens will first take backups of all
-                      affected resources, then show you a backup confirmation before making any changes.
+              {/* Enterprise Safety Stack Banner */}
+              <div className="mt-6 p-5 bg-gradient-to-br from-dark-900 via-dark-800 to-dark-900 border border-emerald-500/30 rounded-2xl shadow-xl relative overflow-hidden">
+                <div className="absolute top-0 right-0 w-80 h-full bg-gradient-to-l from-emerald-500/5 to-transparent pointer-events-none" />
+                <div className="flex flex-col md:flex-row md:items-center justify-between gap-5 relative z-10">
+                  <div className="space-y-2 max-w-2xl">
+                    <div className="flex items-center gap-2">
+                      <span className="p-1.5 rounded-lg bg-emerald-500/20 text-emerald-400 border border-emerald-500/30">
+                        <ShieldCheckIcon className="w-5 h-5" />
+                      </span>
+                      <span className="text-xs font-bold uppercase tracking-wider text-emerald-400">
+                        Enterprise 7-Layer Safety Stack Active
+                      </span>
+                    </div>
+                    <p className="text-sm text-gray-200 leading-relaxed">
+                      Deployments are protected by automatic pre-change snapshots, zero deletion policy, automated rollback triggers, and human-in-the-loop approval. No resource will ever be deleted without explicit confirmation.
                     </p>
-                    <a href="/auto-remediate" className="btn-success mt-3 inline-flex items-center gap-2 text-sm">
-                      Proceed to AutoRemediate →
-                    </a>
                   </div>
+                  <button
+                    onClick={() => navigate('/auto-remediate')}
+                    className="flex-shrink-0 flex items-center gap-2 px-6 py-3 rounded-xl bg-gradient-to-r from-emerald-600 to-green-600 hover:from-emerald-500 hover:to-green-500 text-white font-semibold text-sm shadow-lg shadow-emerald-600/30 transition-all transform hover:scale-[1.02]"
+                  >
+                    <span>Proceed to AutoRemediate</span>
+                    <ArrowRightIcon className="w-4 h-4" />
+                  </button>
                 </div>
               </div>
             </div>

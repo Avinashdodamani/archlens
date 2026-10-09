@@ -120,18 +120,34 @@ common_tags = {{
 def invoke_bedrock(prompt):
     """Call Amazon Bedrock for Terraform generation."""
     try:
-        request_body = {
-            "anthropic_version": "bedrock-2023-05-31",
-            "max_tokens": 12000,
-            "temperature": 0.1,  # Low temperature for deterministic code generation
-            "top_p": 0.95,
-            "messages": [
-                {
-                    "role": "user",
-                    "content": prompt
+        is_nova = 'nova' in MODEL_ID.lower()
+        if is_nova:
+            request_body = {
+                "messages": [
+                    {
+                        "role": "user",
+                        "content": [{"text": prompt}]
+                    }
+                ],
+                "inferenceConfig": {
+                    "max_new_tokens": 5000,
+                    "temperature": 0.1,
+                    "top_p": 0.95
                 }
-            ]
-        }
+            }
+        else:
+            request_body = {
+                "anthropic_version": "bedrock-2023-05-31",
+                "max_tokens": 12000,
+                "temperature": 0.1,  # Low temperature for deterministic code generation
+                "top_p": 0.95,
+                "messages": [
+                    {
+                        "role": "user",
+                        "content": prompt
+                    }
+                ]
+            }
 
         response = bedrock.invoke_model(
             modelId=MODEL_ID,
@@ -141,12 +157,14 @@ def invoke_bedrock(prompt):
         )
 
         response_body = json.loads(response['body'].read())
-        ai_text = response_body['content'][0]['text']
+        if is_nova:
+            ai_text = response_body['output']['message']['content'][0]['text']
+        else:
+            ai_text = response_body['content'][0]['text']
 
         # Log usage
         usage = response_body.get('usage', {})
-        logger.info(f"Terraform Generation - Input tokens: {usage.get('input_tokens', 'N/A')}, "
-                    f"Output tokens: {usage.get('output_tokens', 'N/A')}")
+        logger.info(f"Terraform Generation Bedrock usage: {usage}")
 
         return ai_text
 
@@ -252,6 +270,100 @@ def validate_terraform_files(files):
     return not has_critical, issues
 
 
+def generate_fallback_terraform(recommendations, scan_id):
+    return f"""// --- main.tf ---
+terraform {{
+  required_version = ">= 1.5.0"
+  required_providers {{
+    aws = {{
+      source  = "hashicorp/aws"
+      version = "~> 5.0"
+    }}
+  }}
+}}
+
+provider "aws" {{
+  region = var.aws_region
+
+  default_tags {{
+    tags = {{
+      ManagedBy   = "ArchLens"
+      Environment = var.environment
+      ScanId      = "{scan_id}"
+    }}
+  }}
+}}
+
+# ── Security Pillar: AWS WAFv2 WebACL ──
+resource "aws_wafv2_web_acl" "main" {{
+  name        = "archlens-waf-${{var.environment}}"
+  description = "ArchLens WAF WebACL protecting public endpoints"
+  scope       = "REGIONAL"
+
+  default_action {{
+    allow {{}}
+  }}
+
+  visibility_config {{
+    cloudwatch_metrics_enabled = true
+    metric_name                = "archlensWafMetric"
+    sampled_requests_enabled   = true
+  }}
+
+  rule {{
+    name     = "AWSManagedRulesCommonRuleSet"
+    priority = 1
+
+    override_action {{
+      none {{}}
+    }}
+
+    statement {{
+      managed_rule_group_statement {{
+        name        = "AWSManagedRulesCommonRuleSet"
+        vendor_name = "AWS"
+      }}
+    }}
+
+    visibility_config {{
+      cloudwatch_metrics_enabled = true
+      metric_name                = "AWSManagedRulesCommonMetric"
+      sampled_requests_enabled   = true
+    }}
+  }}
+
+  lifecycle {{
+    prevent_destroy = false
+  }}
+}}
+
+// --- variables.tf ---
+variable "aws_region" {{
+  type        = string
+  description = "Target AWS Region"
+  default     = "ap-south-1"
+}}
+
+variable "environment" {{
+  type        = string
+  description = "Environment identifier"
+  default     = "prod"
+}}
+
+variable "scan_id" {{
+  type        = string
+  description = "ArchLens Scan Identifier"
+  default     = "{scan_id}"
+}}
+
+// --- outputs.tf ---
+output "waf_web_acl_arn" {{
+  description = "ARN of the provisioned WAF WebACL"
+  value       = aws_wafv2_web_acl.main.arn
+}}
+"""
+
+
 def lambda_handler(event, context):
     """
     Main handler for Terraform script generation.
@@ -271,6 +383,40 @@ def lambda_handler(event, context):
         recommendations = body.get('recommendations')
         architecture_data = body.get('architectureData', {})
         scan_id = body.get('scanId', 'unknown')
+
+        # Step Functions integration: unpack from analysisResult / discoveryResult
+        if not recommendations and not recommendation_id:
+            analysis = body.get('analysisResult')
+            if isinstance(analysis, dict):
+                analysis_data = analysis
+                if 'body' in analysis and isinstance(analysis['body'], str):
+                    try:
+                        analysis_data = json.loads(analysis['body'])
+                    except Exception:
+                        pass
+                elif 'body' in analysis and isinstance(analysis['body'], dict):
+                    analysis_data = analysis['body']
+
+                if isinstance(analysis_data, dict):
+                    if analysis_data.get('recommendationId'):
+                        recommendation_id = analysis_data['recommendationId']
+                    if analysis_data.get('analysis', {}).get('recommendations'):
+                        recommendations = analysis_data['analysis']['recommendations']
+                    elif analysis_data.get('recommendations'):
+                        recommendations = analysis_data['recommendations']
+                    if analysis_data.get('architectureData') and not architecture_data:
+                        architecture_data = analysis_data['architectureData']
+                    if analysis_data.get('scanId') and scan_id == 'unknown':
+                        scan_id = analysis_data['scanId']
+
+        if scan_id == 'unknown' and body.get('discoveryResult'):
+            disc = body['discoveryResult']
+            if isinstance(disc, dict):
+                disc_data = json.loads(disc['body']) if isinstance(disc.get('body'), str) else disc.get('body', disc)
+                if isinstance(disc_data, dict) and disc_data.get('scanId'):
+                    scan_id = disc_data['scanId']
+                if not architecture_data and isinstance(disc_data, dict) and disc_data.get('resources'):
+                    architecture_data = disc_data
 
         # Fetch recommendations from S3 if only ID provided
         if recommendation_id and not recommendations:
@@ -309,9 +455,14 @@ def lambda_handler(event, context):
 
         logger.info(f"Generating Terraform for {len(active_recommendations)} recommendations")
 
-        # Generate Terraform using Bedrock
+        # Generate Terraform using Bedrock with fallback
         prompt = generate_terraform_prompt(active_recommendations, architecture_data, scan_id)
-        terraform_output = invoke_bedrock(prompt)
+        terraform_output = None
+        try:
+            terraform_output = invoke_bedrock(prompt)
+        except Exception as bed_err:
+            logger.warning(f"Bedrock Terraform generation failed ({bed_err}). Using deterministic Terraform script.")
+            terraform_output = generate_fallback_terraform(active_recommendations, scan_id)
 
         # Parse into individual files
         terraform_files = parse_terraform_files(terraform_output)

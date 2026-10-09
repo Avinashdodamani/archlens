@@ -5,6 +5,7 @@
 
 import { create } from 'zustand';
 import { persist } from 'zustand/middleware';
+import { listScans, getScan, deleteScanRecord } from '../services/api';
 
 interface Resource {
   type: string;
@@ -233,8 +234,9 @@ interface AppState {
 
   // Scan management
   saveScan: (scan: Omit<SavedScan, 'scanNumber'>) => void;
-  deleteScan: (scanNumber: number) => void;
-  loadScan: (scanNumber: number) => void;
+  deleteScan: (scanNumber: number) => Promise<void> | void;
+  loadScan: (scanNumber: number) => Promise<void> | void;
+  syncScansFromBackend: () => Promise<void>;
 
   reset: () => void;
 }
@@ -273,7 +275,10 @@ export const useAppStore = create<AppState>()(
       ...initialState,
 
       setAuth: (isAuthenticated, user) => set({ isAuthenticated, user }),
-      setRoleArn: (roleArn) => set({ roleArn }),
+      setRoleArn: (roleArn) => {
+        const cleaned = (roleArn || '').replace('arn:aws:iam://', 'arn:aws:iam::').trim();
+        set({ roleArn: cleaned });
+      },
       setSelectedRegion: (selectedRegion) => set({ selectedRegion }),
       setSelectedRegions: (selectedRegions) => set({ selectedRegions }),
       setAccountId: (accountId) => set({ accountId }),
@@ -326,33 +331,190 @@ export const useAppStore = create<AppState>()(
         }
       },
 
-      // Scan management - renumber sequentially
+      // Scan management — backed by AWS DynamoDB + S3, cached in store.
+      syncScansFromBackend: async () => {
+        try {
+          const res = await listScans();
+          if (res.data?.scans && Array.isArray(res.data.scans) && res.data.scans.length > 0) {
+            const rawScans = res.data.scans;
+            const total = rawScans.length;
+            const mapped: SavedScan[] = rawScans.map((s, idx) => {
+              let parsedSummary: Record<string, number> = {};
+              try {
+                if (typeof s.summary === 'string') {
+                  parsedSummary = JSON.parse(s.summary);
+                } else if (s.summary && typeof s.summary === 'object') {
+                  parsedSummary = s.summary as Record<string, number>;
+                }
+              } catch {
+                parsedSummary = {};
+              }
+
+              const resCount = Number(s.resourceCount || 0);
+              const regionsList = Array.isArray(s.regions) ? s.regions : [String(s.regions || 'ap-south-1')];
+
+              return {
+                scanNumber: total - idx,
+                scanId: s.scanId,
+                accountName: get().connectedAccounts.find((a) => a.accountId === s.accountId)?.accountName || 'AWS Account',
+                accountId: s.accountId,
+                region: regionsList[0] || 'ap-south-1',
+                timestamp: s.timestamp,
+                resourceCount: resCount,
+                scanResult: {
+                  scanId: s.scanId,
+                  accountId: s.accountId,
+                  regions: regionsList,
+                  timestamp: s.timestamp,
+                  resources: [],
+                  relationships: [],
+                  summary: {
+                    total_resources: resCount,
+                    total_relationships: Number(s.relationshipCount || 0),
+                    by_type: parsedSummary,
+                    regions_scanned: regionsList,
+                  },
+                },
+              };
+            });
+
+            // Ensure connected accounts and roleArn are populated
+            const currentConnected = get().connectedAccounts;
+            const primaryAccountId = mapped[0]?.accountId || get().accountId || '515554959344';
+            const defaultRole = `arn:aws:iam::${primaryAccountId}:role/archlens-client-readonly-role`;
+
+            let updatedAccounts = currentConnected.map(acc => ({
+              ...acc,
+              roleArn: (acc.roleArn || '').replace('arn:aws:iam://', 'arn:aws:iam::'),
+            }));
+            if (primaryAccountId && !updatedAccounts.some((a) => a.accountId === primaryAccountId)) {
+              updatedAccounts.push({
+                id: `acc-${primaryAccountId}`,
+                accountName: 'Production AWS Account',
+                accountId: primaryAccountId,
+                roleArn: defaultRole,
+                addedAt: mapped[0]?.timestamp || new Date().toISOString(),
+              });
+            }
+
+            const rawRole = get().roleArn || updatedAccounts[0]?.roleArn || defaultRole;
+            const currentRole = rawRole.replace('arn:aws:iam://', 'arn:aws:iam::');
+
+            set({
+              savedScans: mapped,
+              nextScanNumber: total + 1,
+              connectedAccounts: updatedAccounts,
+              roleArn: currentRole,
+              accountId: get().accountId || primaryAccountId,
+              activeAccountId: get().activeAccountId || updatedAccounts[0]?.id,
+            });
+
+            // Automatically load the latest scan if scanResult is currently empty
+            if (!get().scanResult && mapped.length > 0) {
+              get().loadScan(mapped[0].scanNumber);
+            }
+          }
+        } catch (e) {
+          console.warn('Could not sync scans from AWS DynamoDB:', e);
+        }
+      },
+
       saveScan: (scan) => set((state) => {
-        const nextNum = state.savedScans.length > 0
-          ? Math.max(...state.savedScans.map(s => s.scanNumber)) + 1
-          : 1;
+        const issued = Math.max(
+          state.nextScanNumber || 1,
+          ...state.savedScans.map(s => s.scanNumber + 1),
+          1,
+        );
         return {
           savedScans: [
-            { ...scan, scanNumber: nextNum },
+            { ...scan, scanNumber: issued },
             ...state.savedScans,
           ].slice(0, 100),
-          nextScanNumber: nextNum + 1,
+          nextScanNumber: issued + 1,
         };
       }),
-      deleteScan: (scanNumber) => set((state) => ({
-        savedScans: state.savedScans.filter(s => s.scanNumber !== scanNumber),
-        // Reset counter if all scans deleted
-        ...(state.savedScans.filter(s => s.scanNumber !== scanNumber).length === 0
-          ? { nextScanNumber: 1 }
-          : {}),
-      })),
-      loadScan: (scanNumber) => {
-        const scan = get().savedScans.find(s => s.scanNumber === scanNumber);
-        if (scan) {
+
+      deleteScan: async (scanNumber) => {
+        const target = get().savedScans.find((s) => s.scanNumber === scanNumber);
+        if (target) {
+          deleteScanRecord(target.scanId, target.accountId).catch((e) =>
+            console.warn('Could not delete scan from DynamoDB:', e)
+          );
+        }
+        set((state) => ({
+          savedScans: state.savedScans.filter((s) => s.scanNumber !== scanNumber),
+        }));
+      },
+
+      loadScan: async (scanNumber) => {
+        const scan = get().savedScans.find((s) => s.scanNumber === scanNumber);
+        if (!scan) return;
+
+        const rawRole = get().roleArn || `arn:aws:iam::${scan.accountId}:role/archlens-client-readonly-role`;
+        const targetRole = rawRole.replace('arn:aws:iam://', 'arn:aws:iam::');
+        const existingAccounts = get().connectedAccounts.map(acc => ({
+          ...acc,
+          roleArn: (acc.roleArn || '').replace('arn:aws:iam://', 'arn:aws:iam::'),
+        }));
+        let updatedAccounts = [...existingAccounts];
+        if (scan.accountId && !existingAccounts.some((a) => a.accountId === scan.accountId)) {
+          updatedAccounts.push({
+            id: `acc-${scan.accountId}`,
+            accountName: scan.accountName || 'AWS Account',
+            accountId: scan.accountId,
+            roleArn: targetRole,
+            addedAt: scan.timestamp,
+          });
+        }
+        const activeAccId = updatedAccounts.find((a) => a.accountId === scan.accountId)?.id || updatedAccounts[0]?.id || `acc-${scan.accountId}`;
+
+        // If full resources are already loaded into memory:
+        if (scan.scanResult && scan.scanResult.resources && scan.scanResult.resources.length > 0) {
           set({
             scanResult: scan.scanResult,
             currentStep: 'discovered',
             accountId: scan.accountId,
+            roleArn: targetRole,
+            connectedAccounts: updatedAccounts,
+            activeAccountId: activeAccId,
+          });
+          return;
+        }
+
+        // Otherwise, fetch the full scan details from S3:
+        try {
+          const res = await getScan(scan.scanId);
+          if (res.data && Array.isArray((res.data as any).resources)) {
+            const fullScan = res.data as ScanResult;
+            set((state) => ({
+              scanResult: fullScan,
+              currentStep: 'discovered',
+              accountId: scan.accountId,
+              roleArn: targetRole,
+              connectedAccounts: updatedAccounts,
+              activeAccountId: activeAccId,
+              savedScans: state.savedScans.map((s) =>
+                s.scanNumber === scanNumber ? { ...s, scanResult: fullScan } : s
+              ),
+            }));
+          } else {
+            set({
+              scanResult: scan.scanResult,
+              currentStep: 'discovered',
+              accountId: scan.accountId,
+              roleArn: targetRole,
+              connectedAccounts: updatedAccounts,
+              activeAccountId: activeAccId,
+            });
+          }
+        } catch {
+          set({
+            scanResult: scan.scanResult,
+            currentStep: 'discovered',
+            accountId: scan.accountId,
+            roleArn: targetRole,
+            connectedAccounts: updatedAccounts,
+            activeAccountId: activeAccId,
           });
         }
       },
@@ -365,6 +527,10 @@ export const useAppStore = create<AppState>()(
         savedScans: state.savedScans,
         nextScanNumber: state.nextScanNumber,
         connectedAccounts: state.connectedAccounts,
+        activeAccountId: state.activeAccountId,
+        roleArn: state.roleArn,
+        accountId: state.accountId,
+        selectedRegion: state.selectedRegion,
         darkMode: state.darkMode,
       }),
     }

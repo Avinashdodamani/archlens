@@ -74,6 +74,40 @@ export async function discoverResources(params: {
 }
 
 /**
+ * List all saved scans from DynamoDB.
+ */
+export async function listScans(params?: { accountId?: string }) {
+  return apiRequest<{
+    scans: Array<{
+      scanId: string;
+      accountId: string;
+      regions: string[];
+      timestamp: string;
+      resourceCount: number | string;
+      relationshipCount?: number | string;
+      status: string;
+      summary?: string;
+      s3Key?: string;
+    }>;
+    count: number;
+  }>('/discover', 'POST', { action: 'list_scans', ...params });
+}
+
+/**
+ * Fetch full scan details JSON from S3.
+ */
+export async function getScan(scanId: string) {
+  return apiRequest<Record<string, unknown>>('/discover', 'POST', { action: 'get_scan', scanId });
+}
+
+/**
+ * Delete a scan record from DynamoDB.
+ */
+export async function deleteScanRecord(scanId: string, accountId: string) {
+  return apiRequest<{ message: string }>('/discover', 'POST', { action: 'delete_scan', scanId, accountId });
+}
+
+/**
  * Analyze architecture against selected WAF pillars.
  */
 export async function analyzeArchitecture(params: {
@@ -82,6 +116,27 @@ export async function analyzeArchitecture(params: {
   architectureData?: unknown;
 }) {
   return apiRequest('/analyze', 'POST', params as unknown as Record<string, unknown>);
+}
+
+/**
+ * Interactive AI Chatbot powered by Amazon Bedrock (Nova Pro).
+ */
+export async function chatWithAI(params: {
+  question: string;
+  scanId?: string;
+  scanTimestamp?: string;
+  recentScans?: unknown[];
+  architectureData?: unknown;
+  analysisData?: unknown;
+  remediationStatus?: unknown;
+  activeSection?: string;
+  chatHistory?: Array<{ role: string; text: string }>;
+}) {
+  return apiRequest<{ reply: string; timestamp: string; model_used: string }>(
+    '/analyze',
+    'POST',
+    { action: 'chat', ...params } as Record<string, unknown>
+  );
 }
 
 /**
@@ -130,6 +185,7 @@ export async function detectDrift(params: {
   accountId: string;
   baselineScanId?: string;
   currentScanId?: string;
+  sendAlert?: boolean;
 }) {
   return apiRequest('/detect-drift', 'POST', params as unknown as Record<string, unknown>);
 }
@@ -145,19 +201,21 @@ export async function generateReport(params: {
 }
 
 /**
- * Manage scheduled scans (SOW 4.2): create | list | enable | disable | delete.
+ * Manage scheduled scans (SOW 4.2): create | update | list | enable | disable | delete | run.
  */
 export async function manageSchedule(params: {
-  action: 'create' | 'list' | 'enable' | 'disable' | 'delete';
+  action: 'create' | 'update' | 'list' | 'enable' | 'disable' | 'delete' | 'run';
   accountId?: string;
   scheduleId?: string;
   roleArn?: string;
   region?: string;
   regions?: string[];
   externalId?: string;
-  frequency?: 'once' | 'daily';
+  frequency?: 'once' | 'daily' | 'weekly';
   runAt?: string;
   dailyTime?: string;
+  dayOfWeek?: string;
+  timezone?: string;
   label?: string;
 }) {
   return apiRequest('/schedule', 'POST', params as unknown as Record<string, unknown>);
@@ -185,6 +243,7 @@ export async function workflow(params: {
 export default {
   discoverResources,
   analyzeArchitecture,
+  chatWithAI,
   generateCFT,
   generateTerraform,
   triggerBackup,

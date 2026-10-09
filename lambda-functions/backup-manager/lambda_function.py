@@ -532,6 +532,31 @@ def lambda_handler(event, context):
         recommendations = body.get('recommendations', [])
         architecture_data = body.get('architectureData', {})
 
+        # Step Functions integration: unpack from analysisResult and discoveryResult
+        if body.get('analysisResult'):
+            ar = body['analysisResult']
+            ar_data = json.loads(ar['body']) if isinstance(ar.get('body'), str) else ar.get('body', ar)
+            if isinstance(ar_data, dict):
+                if not recommendations and ar_data.get('analysis', {}).get('recommendations'):
+                    recommendations = ar_data['analysis']['recommendations']
+                elif not recommendations and ar_data.get('recommendations'):
+                    recommendations = ar_data['recommendations']
+                if not architecture_data and ar_data.get('architectureData'):
+                    architecture_data = ar_data['architectureData']
+                if scan_id == 'unknown' and ar_data.get('scanId'):
+                    scan_id = ar_data['scanId']
+                if not recommendation_id and ar_data.get('recommendationId'):
+                    recommendation_id = ar_data['recommendationId']
+
+        if body.get('discoveryResult'):
+            dr = body['discoveryResult']
+            dr_data = json.loads(dr['body']) if isinstance(dr.get('body'), str) else dr.get('body', dr)
+            if isinstance(dr_data, dict):
+                if not architecture_data and dr_data.get('resources'):
+                    architecture_data = dr_data
+                if scan_id == 'unknown' and dr_data.get('scanId'):
+                    scan_id = dr_data['scanId']
+
         # Fetch data from S3 if not provided directly
         if not recommendations and recommendation_id:
             try:

@@ -9,6 +9,7 @@ import boto3
 import os
 import logging
 from datetime import datetime
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from botocore.exceptions import ClientError, BotoCoreError
 
 # Configure logging
@@ -41,10 +42,11 @@ def assume_client_role(role_arn, external_id=None):
     assume_params = {
         'RoleArn': role_arn,
         'RoleSessionName': f'ArchLens-Discovery-{datetime.utcnow().strftime("%Y%m%d%H%M%S")}',
-        'DurationSeconds': SCAN_TIMEOUT_SECONDS
     }
     if external_id:
         assume_params['ExternalId'] = external_id
+    if SCAN_TIMEOUT_SECONDS and SCAN_TIMEOUT_SECONDS <= 3600:
+        assume_params['DurationSeconds'] = SCAN_TIMEOUT_SECONDS
 
     try:
         response = sts_client.assume_role(**assume_params)
@@ -56,7 +58,23 @@ def assume_client_role(role_arn, external_id=None):
             'aws_session_token': credentials['SessionToken']
         }
     except ClientError as e:
-        logger.error(f"Failed to assume role {role_arn}: {e.response['Error']['Message']}")
+        err_msg = e.response.get('Error', {}).get('Message', '')
+        if 'DurationSeconds' in err_msg and 'DurationSeconds' in assume_params:
+            logger.warning(f"Retrying assume_role without explicit DurationSeconds: {err_msg}")
+            del assume_params['DurationSeconds']
+            try:
+                response = sts_client.assume_role(**assume_params)
+                credentials = response['Credentials']
+                logger.info(f"Successfully assumed role: {role_arn}")
+                return {
+                    'aws_access_key_id': credentials['AccessKeyId'],
+                    'aws_secret_access_key': credentials['SecretAccessKey'],
+                    'aws_session_token': credentials['SessionToken']
+                }
+            except ClientError as e2:
+                logger.error(f"Failed to assume role {role_arn}: {e2.response['Error']['Message']}")
+                raise
+        logger.error(f"Failed to assume role {role_arn}: {err_msg}")
         raise
 
 
@@ -166,20 +184,29 @@ def discover_s3(credentials, region):
 
     for bucket in response.get('Buckets', []):
         bucket_name = bucket['Name']
+        
+        # Get bucket details and true geographic location constraint safely
+        bucket_region = 'us-east-1'
+        try:
+            location = s3.get_bucket_location(Bucket=bucket_name)
+            loc = location.get('LocationConstraint')
+            if not loc:
+                bucket_region = 'us-east-1'
+            elif loc == 'EU':
+                bucket_region = 'eu-west-1'
+            else:
+                bucket_region = str(loc)
+        except ClientError:
+            bucket_region = 'unknown'
+
         bucket_info = {
             'type': 'S3',
             'id': bucket_name,
             'name': bucket_name,
             'creation_date': bucket['CreationDate'],
-            'region': region
+            'bucket_region': bucket_region,
+            'region': bucket_region
         }
-
-        # Get bucket details safely
-        try:
-            location = s3.get_bucket_location(Bucket=bucket_name)
-            bucket_info['bucket_region'] = location.get('LocationConstraint') or 'us-east-1'
-        except ClientError:
-            bucket_info['bucket_region'] = 'unknown'
 
         try:
             versioning = s3.get_bucket_versioning(Bucket=bucket_name)
@@ -233,6 +260,9 @@ def discover_rds(credentials, region):
     paginator = rds.get_paginator('describe_db_instances')
     for page in paginator.paginate():
         for db in page.get('DBInstances', []):
+            db_subnets = [s.get('SubnetIdentifier') for s in db.get('DBSubnetGroup', {}).get('Subnets', []) if s.get('SubnetIdentifier')]
+            db_az = db.get('AvailabilityZone', '')
+            primary_subnet = db_subnets[0] if db_subnets else ''
             resources.append({
                 'type': 'RDS',
                 'id': db['DBInstanceIdentifier'],
@@ -246,6 +276,9 @@ def discover_rds(credentials, region):
                 'storage_type': db.get('StorageType', ''),
                 'allocated_storage': db.get('AllocatedStorage', 0),
                 'vpc_id': db.get('DBSubnetGroup', {}).get('VpcId', ''),
+                'subnet_id': primary_subnet,
+                'availability_zone': db_az,
+                'subnets': db_subnets,
                 'endpoint': db.get('Endpoint', {}).get('Address', ''),
                 'port': db.get('Endpoint', {}).get('Port', 0),
                 'backup_retention_period': db.get('BackupRetentionPeriod', 0),
@@ -437,6 +470,8 @@ def discover_load_balancers(credentials, region):
         paginator = elbv2.get_paginator('describe_load_balancers')
         for page in paginator.paginate():
             for lb in page.get('LoadBalancers', []):
+                lb_subnets = [az.get('SubnetId') for az in lb.get('AvailabilityZones', []) if az.get('SubnetId')]
+                primary_subnet = lb_subnets[0] if lb_subnets else ''
                 resources.append({
                     'type': 'ELB',
                     'id': lb['LoadBalancerArn'],
@@ -445,8 +480,10 @@ def discover_load_balancers(credentials, region):
                     'scheme': lb.get('Scheme', ''),
                     'state': lb.get('State', {}).get('Code', ''),
                     'vpc_id': lb.get('VpcId', ''),
+                    'subnet_id': primary_subnet,
+                    'subnets': lb_subnets,
                     'dns_name': lb.get('DNSName', ''),
-                    'availability_zones': [az.get('ZoneName') for az in lb.get('AvailabilityZones', [])],
+                    'availability_zones': [az.get('ZoneName') for az in lb.get('AvailabilityZones', []) if az.get('ZoneName')],
                     'region': region
                 })
     except ClientError:
@@ -614,6 +651,48 @@ def discover_eks(credentials, region):
     except ClientError:
         pass
 
+    return resources
+
+
+def discover_iam(credentials, region):
+    """
+    Discover IAM users and roles (global service — scanned once).
+    These appear in the INVENTORY list (with real counts that match the AWS
+    console) but are intentionally kept OUT of the architecture flow diagram.
+    Customer-managed roles only for roles (AWS service-linked roles under
+    /aws-service-role/ are excluded so the count reflects real, user-created
+    identities like the console's "Roles" view minus service-linked ones).
+    """
+    iam = get_client('iam', credentials, 'us-east-1')
+    resources = []
+    try:
+        paginator = iam.get_paginator('list_users')
+        for page in paginator.paginate():
+            for u in page.get('Users', []):
+                resources.append({
+                    'type': 'IAMUser',
+                    'id': u.get('Arn', u.get('UserName')),
+                    'name': u.get('UserName', ''),
+                    'created': u.get('CreateDate', ''),
+                    'region': 'global',
+                    'discovered_via': 'iam',
+                })
+    except ClientError:
+        pass
+    try:
+        paginator = iam.get_paginator('list_roles')
+        for page in paginator.paginate():
+            for r in page.get('Roles', []):
+                resources.append({
+                    'type': 'IAMRole',
+                    'id': r.get('Arn', r.get('RoleName')),
+                    'name': r.get('RoleName', ''),
+                    'created': r.get('CreateDate', ''),
+                    'region': 'global',
+                    'discovered_via': 'iam',
+                })
+    except ClientError:
+        pass
     return resources
 
 
@@ -1243,6 +1322,82 @@ def discover_ssm(credentials, region):
     return resources
 
 
+def discover_codedeploy(credentials, region):
+    """Discover CodeDeploy applications."""
+    resources = []
+    try:
+        deploy = get_client('codedeploy', credentials, region)
+        paginator = deploy.get_paginator('list_applications')
+        for page in paginator.paginate():
+            for app_name in page.get('applications', []):
+                resources.append({
+                    'type': 'CodeDeploy',
+                    'id': f"arn:aws:codedeploy:{region}:{credentials.get('account_id', '')}:application:{app_name}",
+                    'name': app_name,
+                    'region': region
+                })
+    except Exception:
+        pass
+    return resources
+
+
+def discover_cognito(credentials, region):
+    """Discover Cognito user pools."""
+    resources = []
+    try:
+        cognito = get_client('cognito-idp', credentials, region)
+        paginator = cognito.get_paginator('list_user_pools')
+        for page in paginator.paginate(MaxResults=60):
+            for pool in page.get('UserPools', []):
+                resources.append({
+                    'type': 'Cognito',
+                    'id': pool['Id'],
+                    'name': pool.get('Name', ''),
+                    'region': region
+                })
+    except Exception:
+        pass
+    return resources
+
+
+def discover_backup_plans(credentials, region):
+    """Discover AWS Backup plans."""
+    resources = []
+    try:
+        backup = get_client('backup', credentials, region)
+        paginator = backup.get_paginator('list_backup_plans')
+        for page in paginator.paginate():
+            for plan in page.get('BackupPlansList', []):
+                resources.append({
+                    'type': 'BackupPlan',
+                    'id': plan.get('BackupPlanArn', plan.get('BackupPlanId')),
+                    'name': plan.get('BackupPlanName', ''),
+                    'region': region
+                })
+    except Exception:
+        pass
+    return resources
+
+
+def discover_backup_vaults(credentials, region):
+    """Discover AWS Backup vaults."""
+    resources = []
+    try:
+        backup = get_client('backup', credentials, region)
+        paginator = backup.get_paginator('list_backup_vaults')
+        for page in paginator.paginate():
+            for vault in page.get('BackupVaultList', []):
+                resources.append({
+                    'type': 'BackupVault',
+                    'id': vault.get('BackupVaultArn', vault.get('BackupVaultName')),
+                    'name': vault.get('BackupVaultName', ''),
+                    'region': region
+                })
+    except Exception:
+        pass
+    return resources
+
+
 def discover_all_resources_via_config(credentials, region, already_found_ids):
     """
     Catch-all discovery using AWS Config's advanced query + list APIs.
@@ -1256,6 +1411,19 @@ def discover_all_resources_via_config(credentials, region, already_found_ids):
     """
     resources = []
     relationships = []
+
+    def _norm_id(rid):
+        """Normalize an id to match the caller's dedup keys (bare, lowercased)."""
+        if not rid:
+            return ''
+        s = str(rid)
+        if s.startswith('arn:'):
+            tail = s.split(':')[-1]
+            s = tail.split('/')[-1] if '/' in tail else tail
+        elif '/' in s:
+            s = s.split('/')[-1]
+        return s.lower()
+
     try:
         config = get_client('config', credentials, region)
 
@@ -1279,7 +1447,7 @@ def discover_all_resources_via_config(credentials, region, already_found_ids):
                         continue
 
                     rid = item.get('resourceId', '')
-                    if not rid or rid in already_found_ids:
+                    if not rid or _norm_id(rid) in already_found_ids:
                         continue
 
                     res_type = item.get('resourceType', '')  # AWS::EC2::Instance
@@ -1287,6 +1455,14 @@ def discover_all_resources_via_config(credentials, region, already_found_ids):
                     service = parts[1].lower() if len(parts) > 1 else 'unknown'
                     raw_type = parts[2] if len(parts) > 2 else res_type
                     display_type = _friendly_service_type(service, raw_type)
+
+                    # Skip services a dedicated scanner already covers, and
+                    # drop TIER-1 NOISE. Config counts sub-resources too, so
+                    # this prevents inflating parent-service counts.
+                    if _already_scanned_service(service, 'config'):
+                        continue
+                    if _is_noise_resource(service, raw_type, display_type, rid, item.get('resourceName')):
+                        continue
 
                     resources.append({
                         'type': display_type,
@@ -1299,7 +1475,7 @@ def discover_all_resources_via_config(credentials, region, already_found_ids):
                         'region': region,
                         'discovered_via': 'aws_config',
                     })
-                    already_found_ids.add(rid)
+                    already_found_ids.add(_norm_id(rid))
 
                     # Config's native relationship graph → real connections.
                     for rel in item.get('relationships', []) or []:
@@ -1336,13 +1512,19 @@ def discover_all_resources_via_config(credentials, region, already_found_ids):
                     for item in page.get('resourceIdentifiers', []):
                         rid = item.get('resourceId', '')
                         rname = item.get('resourceName', '') or rid
-                        if not rid or rid in already_found_ids:
+                        if not rid or _norm_id(rid) in already_found_ids:
                             continue
 
                         parts = res_type.split('::')
                         service = parts[1].lower() if len(parts) > 1 else 'unknown'
                         raw_type = parts[2] if len(parts) > 2 else res_type
                         display_type = _friendly_service_type(service, raw_type)
+
+                        # Skip already-scanned services + TIER-1 NOISE.
+                        if _already_scanned_service(service, 'config'):
+                            continue
+                        if _is_noise_resource(service, raw_type, display_type, rid, rname):
+                            continue
 
                         resources.append({
                             'type': display_type,
@@ -1354,7 +1536,7 @@ def discover_all_resources_via_config(credentials, region, already_found_ids):
                             'region': region,
                             'discovered_via': 'aws_config',
                         })
-                        already_found_ids.add(rid)
+                        already_found_ids.add(_norm_id(rid))
             except ClientError:
                 continue
     except ClientError as e:
@@ -1370,8 +1552,8 @@ def _config_resource_types():
     return [
         'AWS::EC2::Instance', 'AWS::EC2::Volume', 'AWS::EC2::SecurityGroup',
         'AWS::EC2::VPC', 'AWS::EC2::Subnet', 'AWS::EC2::NatGateway',
-        'AWS::EC2::InternetGateway', 'AWS::EC2::RouteTable', 'AWS::EC2::NetworkInterface',
-        'AWS::EC2::EIP', 'AWS::S3::Bucket', 'AWS::RDS::DBInstance', 'AWS::RDS::DBCluster',
+        'AWS::EC2::InternetGateway',
+        'AWS::S3::Bucket', 'AWS::RDS::DBInstance', 'AWS::RDS::DBCluster',
         'AWS::Lambda::Function', 'AWS::DynamoDB::Table',
         'AWS::ElasticLoadBalancingV2::LoadBalancer', 'AWS::ElasticLoadBalancing::LoadBalancer',
         'AWS::CloudFront::Distribution', 'AWS::ApiGateway::RestApi', 'AWS::ApiGatewayV2::Api',
@@ -1383,8 +1565,141 @@ def _config_resource_types():
         'AWS::Route53::HostedZone', 'AWS::AutoScaling::AutoScalingGroup',
         'AWS::SecretsManager::Secret', 'AWS::CloudTrail::Trail',
         'AWS::ElasticBeanstalk::Environment', 'AWS::Glue::Job',
-        'AWS::WAFv2::WebACL', 'AWS::GuardDuty::Detector', 'AWS::Redshift::ClusterSnapshot',
+        'AWS::WAFv2::WebACL', 'AWS::GuardDuty::Detector',
     ]
+
+
+# ── Two-tier filtering ──────────────────────────────────────────────────────
+# TIER 1 — NOISE: auto-generated plumbing / ops artifacts that a client does
+# NOT think of as "resources" and that inflate the count so it no longer
+# matches the AWS Console. These are dropped from BOTH the inventory list and
+# the diagram (e.g. ENIs, AMIs, snapshots, key-pairs, log groups, CFN stacks).
+NOISE_ARN_SERVICES = {
+    'cloudformation',      # deployment tooling, not a resource
+    'logs',                # CloudWatch Logs log groups
+    'ssm',                 # parameters / documents / associations
+    'access-analyzer',
+    'organizations',
+    'sts',
+    'health',
+    'support',
+    'resource-groups', 'resource-explorer-2', 'resourceexplorer2', 'tag',
+    'servicecatalog',
+    'cost-explorer', 'ce', 'billing', 'budgets',
+    'servicediscovery',
+    'route53resolver',
+    'scheduler',
+    'appconfig',
+}
+NOISE_EC2_SUBTYPES = {
+    'network-interface', 'elastic-ip', 'eip', 'dhcp-options', 'key-pair',
+    'network-acl', 'image', 'snapshot', 'volume-attachment',
+    'prefix-list', 'spot-instance-request',
+}
+NOISE_DIAGRAM_TYPES = {
+    'NetworkInterface', 'AMI', 'Snapshot', 'KeyPair', 'ElasticIP',
+    'DHCPOptions', 'NetworkACL', 'CloudFormation', 'CloudWatchLogs',
+    'LogGroup', 'SSMParameter', 'SSMDocument',
+    # Unrecognized EC2-namespace sub-resources (launch templates, capacity
+    # reservations, spot/fleet requests, etc.) — not real compute instances,
+    # so they must never be counted as EC2 or shown as nodes.
+    'EC2Other', 'ResourceExplorer2', 'Route53Resolver', 'Scheduler', 'AppConfig', 'Cassandra',
+}
+
+# TIER 2 — INVENTORY-ONLY: real resources the client WANTS counted (so the
+# list matches the console) but that do NOT belong in a traffic-flow diagram
+# (identity, certificates, config recorders, etc.). Kept in the inventory,
+# hidden from the diagram by the frontend's NON_DIAGRAM_TYPES set.
+# (No backend action needed here — listed for documentation.)
+INVENTORY_ONLY_TYPES = {
+    'IAM', 'ACMCertificate', 'Config', 'RouteTable',
+}
+
+
+def _is_noise_resource(service, res_type, display_type, resource_id=None, resource_name=None):
+    """
+    True only for TIER-1 NOISE that should be dropped from the inventory AND
+    the diagram. Filters AWS-managed templates, internal keyspaces, and plumbing.
+    """
+    svc = (service or '').lower()
+    rt = (res_type or '').lower()
+    rid = str(resource_id or '').lower()
+    rname = str(resource_name or '').lower()
+
+    # Drop AWS default / internal managed artifacts
+    if 'codedeploydefault.' in rid or 'codedeploydefault.' in rname:
+        return True
+    if 'appconfig.' in rid or 'appconfig.' in rname:
+        return True
+    if svc in ('cassandra', 'keyspaces') and any(rid.startswith(s) for s in ('system', 'system_schema', 'system_schema_mcs', 'system_multiregion_info')):
+        return True
+    if 'rslvr-autodefined-' in rid or 'rslvr-autodefined-' in rname:
+        return True
+    if rid in ('fargate', 'fargate_spot') or rname in ('fargate', 'fargate_spot'):
+        return True
+    if rid.startswith('alias/aws/') or rname.startswith('alias/aws/'):
+        return True
+    if rid == 'default' and svc in ('scheduler', 'events', 'eventbridge'):
+        return True
+    if svc == 'athena' and rid == 'primary':
+        return True
+
+    if svc in NOISE_ARN_SERVICES:
+        return True
+    if svc == 'ec2' and rt in NOISE_EC2_SUBTYPES:
+        return True
+    if display_type in NOISE_DIAGRAM_TYPES:
+        return True
+    return False
+
+
+# Services that already have a DEDICATED, accurate scanner above. The catch-all
+# (Tagging API + AWS Config) must NOT re-add resources for these — otherwise
+# sub-resources (e.g. API Gateway stages/methods/keys, CodeDeploy deployment
+# groups, ELB listeners/target-groups) get counted as the parent service and
+# massively inflate the numbers (1 API Gateway → 20). The dedicated scanner is
+# the single source of truth for these service codes.
+SCANNED_ARN_SERVICES = {
+    'ec2',                     # EC2 + VPC + Subnet + SG + IGW + NAT (dedicated)
+    's3', 'rds', 'lambda', 'dynamodb',
+    'elasticloadbalancing', 'elasticloadbalancingv2',
+    'cloudfront', 'apigateway', 'apigatewayv2',
+    'ecs', 'eks', 'route53', 'sns', 'sqs', 'kms',
+    'elasticache', 'elasticfilesystem', 'redshift', 'kinesis',
+    'states', 'events', 'cloudwatch', 'autoscaling',
+    'secretsmanager', 'sagemaker', 'glue', 'athena', 'cloudtrail',
+    'elasticbeanstalk', 'neptune', 'rds-db', 'docdb', 'es', 'opensearch',
+    'guardduty', 'wafv2', 'fsx', 'batch', 'apprunner', 'elasticmapreduce',
+    'appsync', 'ssm', 'iam',   # iam has its own dedicated users/roles scanner
+    'config', 'securityhub',
+    'codedeploy', 'cognito', 'cognito-idp', 'cassandra', 'appconfig',
+    'route53resolver', 'resource-explorer-2', 'resourceexplorer2', 'scheduler',
+}
+# AWS::<Service>:: prefixes (from AWS Config) that map to the same dedicated
+# scanners — skip in the Config catch-all for the same reason.
+SCANNED_CONFIG_SERVICES = {
+    'ec2', 's3', 'rds', 'lambda', 'dynamodb', 'elasticloadbalancing',
+    'elasticloadbalancingv2', 'cloudfront', 'apigateway', 'apigatewayv2',
+    'ecs', 'eks', 'route53', 'sns', 'sqs', 'kms', 'elasticache', 'efs',
+    'redshift', 'kinesis', 'stepfunctions', 'events', 'cloudwatch',
+    'autoscaling', 'secretsmanager', 'sagemaker', 'glue', 'athena',
+    'cloudtrail', 'elasticbeanstalk', 'wafv2', 'guardduty', 'iam',
+    'config', 'securityhub',
+    'codedeploy', 'cognito', 'cognito-idp', 'cassandra', 'appconfig',
+    'route53resolver', 'resourceexplorer2', 'scheduler',
+}
+
+
+def _already_scanned_service(service, source):
+    """
+    True if a dedicated scanner already covers this service, so the catch-all
+    should skip it to avoid double/over-counting sub-resources.
+    `source` is 'tagging' (ARN service code) or 'config' (AWS::Service::).
+    """
+    svc = (service or '').lower()
+    if source == 'config':
+        return svc in SCANNED_CONFIG_SERVICES
+    return svc in SCANNED_ARN_SERVICES
 
 
 def discover_all_resources_via_tagging(credentials, region, already_found_arns):
@@ -1398,6 +1713,18 @@ def discover_all_resources_via_tagging(credentials, region, already_found_arns):
     Any resource type without a dedicated scanner still appears on the diagram
     with a generic icon and its raw AWS service/type label — never dropped.
     """
+    def _norm_id(rid):
+        """Normalize an id/ARN to a bare, lowercased key for dedup."""
+        if not rid:
+            return ''
+        s = str(rid)
+        if s.startswith('arn:'):
+            tail = s.split(':')[-1]
+            s = tail.split('/')[-1] if '/' in tail else tail
+        elif '/' in s:
+            s = s.split('/')[-1]
+        return s.lower()
+
     resources = []
     try:
         tagging = get_client('resourcegroupstaggingapi', credentials, region)
@@ -1405,7 +1732,7 @@ def discover_all_resources_via_tagging(credentials, region, already_found_arns):
         for page in paginator.paginate(ResourcesPerPage=100):
             for item in page.get('ResourceTagMappingList', []):
                 arn = item.get('ResourceARN', '')
-                if not arn or arn in already_found_arns:
+                if not arn or _norm_id(arn) in already_found_arns:
                     continue
 
                 # Parse the ARN to derive service + resource type + name.
@@ -1421,6 +1748,18 @@ def discover_all_resources_via_tagging(credentials, region, already_found_arns):
 
                 tags = {t['Key']: t['Value'] for t in item.get('Tags', [])}
                 display_type = _friendly_service_type(service, res_type)
+
+                # Skip services that already have a dedicated scanner — the
+                # Tagging API returns their sub-resources too (API Gateway
+                # stages/methods/keys, ELB listeners, CodeDeploy groups, …),
+                # which would inflate the parent-service count. The dedicated
+                # scanner is the single source of truth for those.
+                if _already_scanned_service(service, 'tagging'):
+                    continue
+
+                # Drop TIER-1 NOISE (ENIs, AMIs, snapshots, log groups…).
+                if _is_noise_resource(service, res_type, display_type, arn, res_name):
+                    continue
 
                 resources.append({
                     'type': display_type,
@@ -1546,8 +1885,29 @@ def _friendly_service_type(service, res_type):
         'dhcp-options': 'DHCPOptions',
         'key-pair': 'KeyPair',
     }
-    if service == 'ec2' and rt in ec2_subtype_map:
-        return ec2_subtype_map[rt]
+    if service == 'ec2':
+        if rt in ec2_subtype_map:
+            return ec2_subtype_map[rt]
+        # An EC2-namespace ARN whose sub-type we don't recognize (launch
+        # template, capacity reservation, spot request, fleet, etc.) must NOT
+        # be counted as an EC2 instance — that inflates the EC2 count. Label it
+        # generically so it doesn't masquerade as a compute instance.
+        return 'EC2Other'
+
+    # IAM sub-resources → split users vs roles so the inventory shows separate
+    # counts (matching the console's Users / Roles views). Policies/groups/
+    # instance-profiles roll up under a generic IAM label.
+    if service == 'iam':
+        if rt in ('user',):
+            return 'IAMUser'
+        if rt in ('role',):
+            return 'IAMRole'
+        return 'IAM'
+
+    if service == 'backup':
+        if 'vault' in rt:
+            return 'BackupVault'
+        return 'BackupPlan'
 
     # Map common ARN service codes to our diagram type keys (which have icons).
     service_map = {
@@ -1583,7 +1943,6 @@ def _friendly_service_type(service, res_type):
         'cloudtrail': 'CloudTrail',
         'elasticbeanstalk': 'ElasticBeanstalk',
         'autoscaling': 'AutoScaling',
-        'backup': 'Backup',
     }
     if service in service_map:
         return service_map[service]
@@ -1725,21 +2084,12 @@ def build_relationships(resources):
     return relationships
 
 
-def lambda_handler(event, context):
+def _run_discovery(body):
     """
-    Main handler for resource discovery.
-    Input: { roleArn, region, accountId, externalId (optional), regions (optional list) }
-    Output: Complete resource inventory with relationships.
+    Execute the full multi-region discovery and return the discovery_result dict.
+    Raises on unrecoverable errors so callers can mark the scan record failed.
     """
-    try:
-        # Parse input - handle both API Gateway and Step Functions invocations
-        if isinstance(event.get('body'), str):
-            body = json.loads(event['body'])
-        elif 'body' in event:
-            body = event['body'] if isinstance(event['body'], dict) else {}
-        else:
-            body = event
-
+    if True:
         role_arn = body.get('roleArn')
         # Region MUST come from the client's selection — no hardcoded test-region fallback.
         primary_region = body.get('region')
@@ -1750,18 +2100,10 @@ def lambda_handler(event, context):
 
         # Validation
         if not role_arn:
-            return {
-                'statusCode': 400,
-                'headers': {'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*'},
-                'body': json.dumps({'error': 'roleArn is required'})
-            }
+            raise ValueError('roleArn is required')
 
         if not scan_regions:
-            return {
-                'statusCode': 400,
-                'headers': {'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*'},
-                'body': json.dumps({'error': 'region is required — please select a region when connecting the account'})
-            }
+            raise ValueError('region is required — please select a region when connecting the account')
 
         # Extract account ID from role ARN if not provided
         if not account_id:
@@ -1773,133 +2115,236 @@ def lambda_handler(event, context):
         # Assume client role
         credentials = assume_client_role(role_arn, external_id)
 
+        # Multi-region scan optimization: query active/enabled regions in client account to avoid timeout
+        if len(scan_regions) > 1:
+            try:
+                probe_reg = primary_region if primary_region and primary_region != 'all' else 'us-east-1'
+                ec2_client = get_client('ec2', credentials, probe_reg)
+                enabled_resp = ec2_client.describe_regions(AllRegions=False)
+                enabled_set = {r['RegionName'] for r in enabled_resp.get('Regions', [])}
+                original_count = len(scan_regions)
+                filtered = [r for r in scan_regions if r in enabled_set]
+                if filtered:
+                    scan_regions = filtered
+                    logger.info(f"Filtered scan_regions from {original_count} to {len(scan_regions)} enabled regions: {scan_regions}")
+            except Exception as reg_err:
+                logger.warning(f"Could not filter regions via describe_regions: {reg_err}")
+
         # Discover resources across all specified regions
         all_resources = []
         discovery_errors = []
+        logger.info(f"Scanning {len(scan_regions)} region(s): {scan_regions}")
 
-        for region in scan_regions:
-            logger.info(f"Scanning region: {region}")
+        # ── Parallel per-region scan ─────────────────────────────────────────
+        # Each region runs ~40 describe/list calls. Doing regions sequentially
+        # makes all-regions scans exceed the API Gateway 29s limit. We scan all
+        # regions concurrently (I/O-bound → threads help a lot) so a full
+        # all-regions scan has a chance to finish inside the sync window.
+        def _scan_one_region(region):
+            found = []
+            # Core detailed scanners.
+            found.extend(safe_discover(discover_ec2, 'EC2', credentials, region))
+            found.extend(safe_discover(discover_security_groups, 'SecurityGroups', credentials, region))
+            found.extend(safe_discover(discover_rds, 'RDS', credentials, region))
+            found.extend(safe_discover(discover_lambda_functions, 'Lambda', credentials, region))
+            found.extend(safe_discover(discover_vpcs, 'VPC', credentials, region))
+            found.extend(safe_discover(discover_load_balancers, 'ELB', credentials, region))
+            found.extend(safe_discover(discover_dynamodb_tables, 'DynamoDB', credentials, region))
+            found.extend(safe_discover(discover_api_gateways, 'APIGateway', credentials, region))
+            found.extend(safe_discover(discover_ecs, 'ECS', credentials, region))
+            found.extend(safe_discover(discover_eks, 'EKS', credentials, region))
+            found.extend(safe_discover(discover_sns_topics, 'SNS', credentials, region))
+            found.extend(safe_discover(discover_sqs_queues, 'SQS', credentials, region))
+            found.extend(safe_discover(discover_kms_keys, 'KMS', credentials, region))
+            # Extended describe/list scanners (SOW: 50+ services).
+            found.extend(safe_discover(discover_ebs_volumes, 'EBS', credentials, region))
+            found.extend(safe_discover(discover_elasticache, 'ElastiCache', credentials, region))
+            found.extend(safe_discover(discover_efs, 'EFS', credentials, region))
+            found.extend(safe_discover(discover_redshift, 'Redshift', credentials, region))
+            found.extend(safe_discover(discover_kinesis, 'Kinesis', credentials, region))
+            found.extend(safe_discover(discover_stepfunctions, 'StepFunctions', credentials, region))
+            found.extend(safe_discover(discover_eventbridge, 'EventBridge', credentials, region))
+            found.extend(safe_discover(discover_cloudwatch_alarms, 'CloudWatch', credentials, region))
+            found.extend(safe_discover(discover_autoscaling, 'AutoScaling', credentials, region))
+            found.extend(safe_discover(discover_secretsmanager, 'SecretsManager', credentials, region))
+            found.extend(safe_discover(discover_sagemaker, 'SageMaker', credentials, region))
+            found.extend(safe_discover(discover_glue, 'Glue', credentials, region))
+            found.extend(safe_discover(discover_athena, 'Athena', credentials, region))
+            found.extend(safe_discover(discover_cloudtrail, 'CloudTrail', credentials, region))
+            found.extend(safe_discover(discover_elasticbeanstalk, 'ElasticBeanstalk', credentials, region))
+            found.extend(safe_discover(discover_apigatewayv2, 'APIGatewayV2', credentials, region))
+            found.extend(safe_discover(discover_neptune, 'Neptune', credentials, region))
+            found.extend(safe_discover(discover_documentdb, 'DocumentDB', credentials, region))
+            found.extend(safe_discover(discover_opensearch, 'OpenSearch', credentials, region))
+            found.extend(safe_discover(discover_guardduty, 'GuardDuty', credentials, region))
+            found.extend(safe_discover(discover_wafv2, 'WAF', credentials, region))
+            found.extend(safe_discover(discover_transit_gateway, 'TransitGateway', credentials, region))
+            found.extend(safe_discover(discover_security_hub, 'SecurityHub', credentials, region))
+            found.extend(safe_discover(discover_config, 'Config', credentials, region))
+            found.extend(safe_discover(discover_fsx, 'FSx', credentials, region))
+            found.extend(safe_discover(discover_batch, 'Batch', credentials, region))
+            found.extend(safe_discover(discover_apprunner, 'AppRunner', credentials, region))
+            found.extend(safe_discover(discover_emr, 'EMR', credentials, region))
+            found.extend(safe_discover(discover_appsync, 'AppSync', credentials, region))
+            found.extend(safe_discover(discover_ssm, 'SystemsManager', credentials, region))
+            found.extend(safe_discover(discover_codedeploy, 'CodeDeploy', credentials, region))
+            found.extend(safe_discover(discover_cognito, 'Cognito', credentials, region))
+            found.extend(safe_discover(discover_backup_plans, 'BackupPlan', credentials, region))
+            found.extend(safe_discover(discover_backup_vaults, 'BackupVault', credentials, region))
+            return found
 
-            all_resources.extend(safe_discover(discover_ec2, 'EC2', credentials, region))
-            all_resources.extend(safe_discover(discover_security_groups, 'SecurityGroups', credentials, region))
-            all_resources.extend(safe_discover(discover_s3, 'S3', credentials, region))
-            all_resources.extend(safe_discover(discover_rds, 'RDS', credentials, region))
-            all_resources.extend(safe_discover(discover_lambda_functions, 'Lambda', credentials, region))
-            all_resources.extend(safe_discover(discover_vpcs, 'VPC', credentials, region))
-            all_resources.extend(safe_discover(discover_load_balancers, 'ELB', credentials, region))
-            all_resources.extend(safe_discover(discover_dynamodb_tables, 'DynamoDB', credentials, region))
-            all_resources.extend(safe_discover(discover_api_gateways, 'APIGateway', credentials, region))
-            all_resources.extend(safe_discover(discover_ecs, 'ECS', credentials, region))
-            all_resources.extend(safe_discover(discover_eks, 'EKS', credentials, region))
-            all_resources.extend(safe_discover(discover_sns_topics, 'SNS', credentials, region))
-            all_resources.extend(safe_discover(discover_sqs_queues, 'SQS', credentials, region))
-            all_resources.extend(safe_discover(discover_kms_keys, 'KMS', credentials, region))
+        max_workers = min(len(scan_regions), 12) or 1
+        with ThreadPoolExecutor(max_workers=max_workers) as pool:
+            futures = {pool.submit(_scan_one_region, r): r for r in scan_regions}
+            for fut in as_completed(futures):
+                try:
+                    all_resources.extend(fut.result())
+                except Exception as e:
+                    logger.error(f"Region scan failed for {futures[fut]}: {e}")
 
-        # Global services - only scan once
+        # Global / Account-wide services - only scan once.
         all_resources.extend(safe_discover(discover_cloudfront, 'CloudFront', credentials, 'us-east-1'))
         all_resources.extend(safe_discover(discover_route53, 'Route53', credentials, 'us-east-1'))
-
-        # ── Extended describe/list scanners (SOW: 50+ services) ──────────────
-        # These use describe/list APIs (catch tagged AND untagged resources).
-        for region in scan_regions:
-            all_resources.extend(safe_discover(discover_ebs_volumes, 'EBS', credentials, region))
-            all_resources.extend(safe_discover(discover_elasticache, 'ElastiCache', credentials, region))
-            all_resources.extend(safe_discover(discover_efs, 'EFS', credentials, region))
-            all_resources.extend(safe_discover(discover_redshift, 'Redshift', credentials, region))
-            all_resources.extend(safe_discover(discover_kinesis, 'Kinesis', credentials, region))
-            all_resources.extend(safe_discover(discover_stepfunctions, 'StepFunctions', credentials, region))
-            all_resources.extend(safe_discover(discover_eventbridge, 'EventBridge', credentials, region))
-            all_resources.extend(safe_discover(discover_cloudwatch_alarms, 'CloudWatch', credentials, region))
-            all_resources.extend(safe_discover(discover_autoscaling, 'AutoScaling', credentials, region))
-            all_resources.extend(safe_discover(discover_secretsmanager, 'SecretsManager', credentials, region))
-            all_resources.extend(safe_discover(discover_sagemaker, 'SageMaker', credentials, region))
-            all_resources.extend(safe_discover(discover_glue, 'Glue', credentials, region))
-            all_resources.extend(safe_discover(discover_athena, 'Athena', credentials, region))
-            all_resources.extend(safe_discover(discover_cloudtrail, 'CloudTrail', credentials, region))
-            all_resources.extend(safe_discover(discover_elasticbeanstalk, 'ElasticBeanstalk', credentials, region))
-            all_resources.extend(safe_discover(discover_apigatewayv2, 'APIGatewayV2', credentials, region))
-            # SOW Appendix A additional services
-            all_resources.extend(safe_discover(discover_neptune, 'Neptune', credentials, region))
-            all_resources.extend(safe_discover(discover_documentdb, 'DocumentDB', credentials, region))
-            all_resources.extend(safe_discover(discover_opensearch, 'OpenSearch', credentials, region))
-            all_resources.extend(safe_discover(discover_guardduty, 'GuardDuty', credentials, region))
-            all_resources.extend(safe_discover(discover_wafv2, 'WAF', credentials, region))
-            all_resources.extend(safe_discover(discover_transit_gateway, 'TransitGateway', credentials, region))
-            all_resources.extend(safe_discover(discover_security_hub, 'SecurityHub', credentials, region))
-            all_resources.extend(safe_discover(discover_config, 'Config', credentials, region))
-            all_resources.extend(safe_discover(discover_fsx, 'FSx', credentials, region))
-            all_resources.extend(safe_discover(discover_batch, 'Batch', credentials, region))
-            all_resources.extend(safe_discover(discover_apprunner, 'AppRunner', credentials, region))
-            all_resources.extend(safe_discover(discover_emr, 'EMR', credentials, region))
-            all_resources.extend(safe_discover(discover_appsync, 'AppSync', credentials, region))
-            all_resources.extend(safe_discover(discover_ssm, 'SystemsManager', credentials, region))
+        all_resources.extend(safe_discover(discover_iam, 'IAM', credentials, 'us-east-1'))
+        all_resources.extend(safe_discover(discover_s3, 'S3', credentials, primary_region or 'us-east-1'))
 
         # ── Safety-net catch-alls so NOTHING is missed (tagged or untagged) ──
-        already_found_arns = {r.get('id', '') for r in all_resources}
-        config_relationships = []  # real relationships from AWS Config (if enabled)
-        for region in scan_regions:
-            # 1. Tagging API → any TAGGED resource of a service without a scanner.
-            tagged = safe_discover(
-                lambda creds, reg: discover_all_resources_via_tagging(creds, reg, already_found_arns),
-                'TaggingAPI', credentials, region
-            )
-            for r in tagged:
-                if r.get('id') not in already_found_arns:
-                    all_resources.append(r)
-                    already_found_arns.add(r.get('id'))
+        # Dedup by a NORMALIZED key so the same resource discovered by different
+        # sources (detailed scanner = bare id like "vpc-123", tagging API = full
+        # ARN "...:vpc/vpc-123", Config = "vpc-123") is only counted ONCE.
+        def _dedup_key(resource_id):
+            if not resource_id:
+                return ''
+            rid = str(resource_id)
+            # If it's an ARN, take the last path/colon segment (the bare id).
+            if rid.startswith('arn:'):
+                tail = rid.split(':')[-1]
+                if '/' in tail:
+                    tail = tail.split('/')[-1]
+                return tail.lower()
+            if '/' in rid:
+                return rid.split('/')[-1].lower()
+            return rid.lower()
 
-            # 2. AWS Config → UNTAGGED resources too (any recorded service),
-            #    PLUS real relationships from Config's native graph, when the
-            #    client has Config enabled. Guarantees full coverage + connections.
+        already_found_arns = {_dedup_key(r.get('id', '')) for r in all_resources}
+        config_relationships = []  # real relationships from AWS Config (if enabled)
+
+        # Catch-all discovery (Tagging API + AWS Config) runs per region and is
+        # I/O-bound, so parallelize it too. Each worker returns its findings;
+        # dedup happens sequentially afterwards to keep the shared set correct.
+        def _catchall_one_region(region):
+            snapshot = set(already_found_arns)
+            tagged = safe_discover(
+                lambda creds, reg: discover_all_resources_via_tagging(creds, reg, snapshot),
+                'TaggingAPI', credentials, region
+            ) or []
+            cfg_found, cfg_rels = [], []
             try:
-                config_found, config_rels = discover_all_resources_via_config(
-                    credentials, region, already_found_arns
+                cfg_found, cfg_rels = discover_all_resources_via_config(
+                    credentials, region, snapshot
                 )
-                for r in config_found:
-                    if r.get('id') not in already_found_arns:
-                        all_resources.append(r)
-                        already_found_arns.add(r.get('id'))
-                # Store Config relationships to merge after build_relationships.
-                config_relationships.extend(config_rels)
             except Exception as e:
                 logger.info(f"AWS Config discovery skipped in {region}: {str(e)}")
+            return tagged, cfg_found, cfg_rels
+
+        with ThreadPoolExecutor(max_workers=min(len(scan_regions), 12) or 1) as pool:
+            futures = {pool.submit(_catchall_one_region, r): r for r in scan_regions}
+            for fut in as_completed(futures):
+                try:
+                    tagged, cfg_found, cfg_rels = fut.result()
+                except Exception as e:
+                    logger.error(f"Catch-all scan failed for {futures[fut]}: {e}")
+                    continue
+                for r in tagged:
+                    key = _dedup_key(r.get('id'))
+                    if key and key not in already_found_arns:
+                        all_resources.append(r)
+                        already_found_arns.add(key)
+                for r in cfg_found:
+                    key = _dedup_key(r.get('id'))
+                    if key and key not in already_found_arns:
+                        all_resources.append(r)
+                        already_found_arns.add(key)
+                config_relationships.extend(cfg_rels)
 
         # ── Cost Explorer: full service footprint (matches billing) ──────────
         services_footprint = discover_services_from_cost_explorer(credentials)
         # ── Cost Explorer: 90-day monthly trend (SOW 4.1 cost trend widget) ──
         cost_trend = discover_cost_trend(credentials)
 
-        # ── Add billed-but-not-discovered services as diagram nodes ──────────
-        # Any service the client is billed for (Cost Explorer) that we did NOT
-        # find via detailed/tagging scanners is added as a node so NOTHING the
-        # client uses is missing from the diagram. Shown with a generic icon
-        # and the service name (no individual resource detail available).
-        discovered_services = {
-            (r.get('aws_service') or _service_code_for_type(r.get('type', ''))).lower()
-            for r in all_resources
-        }
-        # Billing line items that are NOT actual services — never show as nodes.
-        NON_SERVICE_BILLING = {'tax', 'refund', 'credit', 'support', 'savings plans',
-                               'aws support', 'aws premium support'}
-        for svc in services_footprint:
-            svc_name = svc.get('service', '')
-            if svc_name.strip().lower() in NON_SERVICE_BILLING:
-                continue  # skip Tax/Refund/Credit/Support billing entries
-            svc_code = _cost_explorer_name_to_code(svc_name)
-            if not svc_code or svc_code.lower() in discovered_services:
-                continue  # already visualized via a real resource
-            display_type = _friendly_service_type(svc_code, svc_code)
-            all_resources.append({
-                'type': display_type,
-                'id': f"billing::{svc_code}",
-                'name': svc_name,
-                'aws_service': svc_code,
-                'discovered_via': 'cost_explorer',
-                'monthly_cost_usd': svc.get('monthly_cost_usd', 0),
-                'note': 'Detected in billing — no individual resource details available',
-                'region': primary_region or (scan_regions[0] if scan_regions else 'global'),
-            })
-            discovered_services.add(svc_code.lower())
+        # NOTE: We intentionally DO NOT add "billed-but-not-discovered" services
+        # as resource nodes. The inventory must reflect ONLY resources that were
+        # actually discovered in the account, so the counts match the AWS
+        # Console exactly. Cost Explorer data is still used for the cost-trend
+        # widget (costTrend) and the optional cost view — never as phantom
+        # resources. (Previously, billing line items like EC2/VPC could appear
+        # with counts even when no such resource existed — that is removed.)
+
+        # ── FINAL DEDUP PASS ─────────────────────────────────────────────────
+        # Guarantee each real resource appears ONCE, regardless of how many
+        # scanners found it (detailed + tagging + Config). We key by
+        # (normalized-id, type) so, e.g., the same VPC found as "vpc-123",
+        # "arn:...:vpc/vpc-123", and Config "vpc-123" collapses to one — while
+        # genuinely different resources (2 real VPCs) are still counted
+        # separately. Prefer the richest record (detailed scanner over ARN-only
+        # tagging/Config entries).
+        def _canonical_key(r):
+            rid = str(r.get('id', ''))
+            if rid.startswith('arn:'):
+                tail = rid.split(':')[-1]
+                bare = tail.split('/')[-1] if '/' in tail else tail
+            elif '/' in rid:
+                bare = rid.split('/')[-1]
+            else:
+                bare = rid
+            return (bare.lower(), r.get('type', ''))
+
+        def _richness(r):
+            # A detailed-scanner record (no 'discovered_via') is richest; then
+            # Config; then tagging; then billing-only.
+            via = r.get('discovered_via', '')
+            return {'': 3, 'aws_config': 2, 'iam': 3, 'tagging_api': 1, 'cost_explorer': 0}.get(via, 1)
+
+        _deduped = {}
+        for r in all_resources:
+            key = _canonical_key(r)
+            existing = _deduped.get(key)
+            if existing is None or _richness(r) > _richness(existing):
+                _deduped[key] = r
+        all_resources = list(_deduped.values())
+
+        # Final safety filter: clean out any noise or system artifacts
+        all_resources = [
+            r for r in all_resources
+            if not _is_noise_resource(
+                r.get('aws_service', r.get('type', '')),
+                r.get('raw_resource_type', r.get('type', '')),
+                r.get('type', ''),
+                r.get('id', ''),
+                r.get('name', '')
+            )
+        ]
+
+        # Ensure inherently global resources are consistently marked as 'global'
+        for r in all_resources:
+            if r.get('type') in ('CloudFront', 'Route53', 'IAM', 'IAMUser', 'IAMRole'):
+                r['region'] = 'global'
+
+        # Filter resources if a single region was explicitly requested
+        is_all_regions = (primary_region == 'all') or (len(scan_regions) > 1)
+        if not is_all_regions and primary_region:
+            def _belongs_to_selected_region(r):
+                # Inherently global services always belong
+                if r.get('type') in ('CloudFront', 'Route53', 'IAM', 'IAMUser', 'IAMRole'):
+                    return True
+                # S3 bucket matching
+                if r.get('type') == 'S3':
+                    breg = r.get('bucket_region') or r.get('region')
+                    return breg == primary_region or breg == 'unknown'
+                # Other regional resources
+                return r.get('region') == primary_region or not r.get('region')
+
+            all_resources = [r for r in all_resources if _belongs_to_selected_region(r)]
 
         # Build relationships from resource configs, then merge AWS Config's
         # native relationship graph (deduped) — Config gives real connections
@@ -1916,8 +2361,9 @@ def lambda_handler(event, context):
                 relationships.append(rel)
                 seen_rel.add(key)
 
-        # Generate scan ID
-        scan_id = f"scan-{account_id}-{datetime.utcnow().strftime('%Y%m%d%H%M%S')}"
+        # Use a pre-assigned scan ID when running as a background job (so the
+        # /status poller can find this exact scan); otherwise generate one.
+        scan_id = body.get('scanId') or f"scan-{account_id}-{datetime.utcnow().strftime('%Y%m%d%H%M%S')}"
 
         # Build summary
         summary_by_type = {}
@@ -1970,28 +2416,121 @@ def lambda_handler(event, context):
 
         logger.info(f"Discovery complete: {len(all_resources)} resources, {len(relationships)} relationships")
 
-        return {
-            'statusCode': 200,
-            'headers': {
-                'Content-Type': 'application/json',
-                'Access-Control-Allow-Origin': '*',
-                'Access-Control-Allow-Methods': 'POST,OPTIONS',
-                'Access-Control-Allow-Headers': 'Content-Type,Authorization'
-            },
-            'body': json.dumps(discovery_result, default=str)
-        }
+        return discovery_result
+
+
+# ── Response helpers ────────────────────────────────────────────────────────
+
+
+def _cors():
+    return {
+        'Content-Type': 'application/json',
+        'Access-Control-Allow-Origin': '*',
+        'Access-Control-Allow-Methods': 'POST,OPTIONS',
+        'Access-Control-Allow-Headers': 'Content-Type,Authorization',
+    }
+
+
+def _err(status, message):
+    return {'statusCode': status, 'headers': _cors(), 'body': json.dumps({'error': message})}
+
+
+def lambda_handler(event, context):
+    """
+    Synchronous resource discovery.
+    Input: { roleArn, region, accountId?, externalId?, regions? }
+    Runs all requested regions and returns the full inventory. If it cannot
+    finish within the API Gateway 29s limit it fails — there is no background job.
+    """
+    try:
+        if isinstance(event.get('body'), str):
+            body = json.loads(event['body'])
+        elif isinstance(event.get('body'), dict):
+            body = event['body']
+        else:
+            body = event
+
+        action = body.get('action')
+        if action == 'list_scans':
+            account_id = body.get('accountId')
+            table = dynamodb.Table(SCANS_TABLE)
+            if account_id:
+                resp = table.scan(
+                    FilterExpression='accountId = :a',
+                    ExpressionAttributeValues={':a': str(account_id)}
+                )
+            else:
+                resp = table.scan()
+            items = resp.get('Items', [])
+            items.sort(key=lambda x: str(x.get('timestamp', '')), reverse=True)
+            return {
+                'statusCode': 200,
+                'headers': _cors(),
+                'body': json.dumps({'scans': items, 'count': len(items)}, default=str)
+            }
+
+        if action == 'get_scan':
+            scan_id = body.get('scanId')
+            if not scan_id:
+                return _err(400, 'scanId is required')
+            try:
+                obj = s3_client.get_object(Bucket=DATA_BUCKET, Key=f"scan-results/{scan_id}.json")
+                scan_data = json.loads(obj['Body'].read())
+                return {
+                    'statusCode': 200,
+                    'headers': _cors(),
+                    'body': json.dumps(scan_data, default=str)
+                }
+            except ClientError as e:
+                return _err(404, f"Scan {scan_id} not found in S3: {e}")
+
+        if action == 'delete_scan':
+            scan_id = body.get('scanId')
+            account_id = body.get('accountId')
+            if not scan_id or not account_id:
+                return _err(400, 'scanId and accountId are required')
+            table = dynamodb.Table(SCANS_TABLE)
+            table.delete_item(Key={'scanId': scan_id, 'accountId': str(account_id)})
+            return {
+                'statusCode': 200,
+                'headers': _cors(),
+                'body': json.dumps({'message': f'Scan {scan_id} deleted successfully'})
+            }
+
+        # Synchronous discovery only. If a scan (e.g. all-regions) cannot finish
+        # within the API Gateway 29s hard limit, it fails cleanly and the UI
+        # shows "Scan failed" — there is no background job.
+        if not body.get('roleArn'):
+            return _err(400, 'roleArn is required')
+        regions = body.get('regions') or ([body.get('region')] if body.get('region') else [])
+        if not regions:
+            return _err(400, 'region is required — please select a region when connecting the account')
+
+        try:
+            result = _run_discovery(body)
+        except ValueError as ve:
+            return _err(400, str(ve))
+        return {'statusCode': 200, 'headers': _cors(), 'body': json.dumps(result, default=str)}
 
     except ClientError as e:
-        logger.error(f"AWS Error in resource discovery: {e.response['Error']['Message']}")
-        return {
-            'statusCode': 500,
-            'headers': {'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*'},
-            'body': json.dumps({'error': f"AWS Error: {e.response['Error']['Message']}"})
-        }
+        error_code = e.response.get('Error', {}).get('Code', '')
+        error_msg = e.response.get('Error', {}).get('Message', '')
+        logger.error(f"AWS Error in resource discovery [{error_code}]: {error_msg}")
+        if error_code == 'AccessDenied' and 'AssumeRole' in error_msg:
+            role_arn = body.get('roleArn', '') if isinstance(body, dict) else ''
+            ext_id = body.get('externalId') if isinstance(body, dict) else None
+            diagnostic = (
+                f"Cross-Account Trust Authorization Failed: ArchLens (AWS Account 515554959344) is not authorized "
+                f"to assume role '{role_arn}'. Please ensure the target AWS account has added ArchLens "
+                f"('arn:aws:iam::515554959344:role/archlens-lambda-execution-role' or 'arn:aws:iam::515554959344:root') "
+                f"to the role's Trust Relationship policy"
+            )
+            if ext_id:
+                diagnostic += f" with ExternalId '{ext_id}'."
+            else:
+                diagnostic += ". If the role requires an External ID, please enter it in the connection form."
+            return _err(403, diagnostic)
+        return _err(500, f"AWS Error: {error_msg}")
     except Exception as e:
         logger.error(f"Unexpected error in resource discovery: {str(e)}")
-        return {
-            'statusCode': 500,
-            'headers': {'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*'},
-            'body': json.dumps({'error': f"Internal error: {str(e)}"})
-        }
+        return _err(500, f"Internal error: {str(e)}")

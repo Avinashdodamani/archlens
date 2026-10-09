@@ -193,30 +193,7 @@ def lambda_handler(event, context):
 
         drift = compute_drift(baseline, current)
 
-        # Email alerts are sent ONLY when explicitly requested (e.g. from a
-        # scheduled scan), and ONLY for real drift — never on manual UI clicks.
-        # This prevents an email on every "Detect drift now" button press.
-        notify = bool(body.get('notify', False))
-        s = drift['summary']
-        real_drift = s['added_count'] > 0 or s['removed_count'] > 0 or s['changed_count'] > 0
-        if notify and real_drift and SNS_TOPIC_ARN:
-            try:
-                sns_client.publish(
-                    TopicArn=SNS_TOPIC_ARN,
-                    Subject=f"ArchLens drift alert for account {account_id}",
-                    Message=(
-                        f"Infrastructure drift was detected for account {account_id}.\n\n"
-                        f"Resources added: {s['added_count']}\n"
-                        f"Resources removed: {s['removed_count']}\n"
-                        f"Resources changed: {s['changed_count']}\n"
-                        f"Net change: {s['net_change']}\n\n"
-                        f"Baseline scan: {base_meta['scanId']} ({base_meta.get('timestamp')})\n"
-                        f"Latest scan: {curr_meta['scanId']} ({curr_meta.get('timestamp')})\n\n"
-                        f"Sign in to ArchLens to review the details.\n"
-                    ),
-                )
-            except ClientError as e:
-                logger.warning(f"SNS publish failed: {e}")
+
 
         return {'statusCode': 200, 'headers': CORS_HEADERS, 'body': json.dumps({
             'drift': drift,

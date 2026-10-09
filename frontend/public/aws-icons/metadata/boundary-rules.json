@@ -1,0 +1,51 @@
+{
+  "version": "1.0",
+  "rules": [
+    {
+      "type": "aws-cloud",
+      "create_when": "top-level diagram scope requires AWS cloud container",
+      "asset_logical_match": "aws-cloud"
+    },
+    {
+      "type": "aws-account",
+      "create_when": "account grouping is selected or multiple accounts are scanned",
+      "asset_logical_match": "aws-account"
+    },
+    {
+      "type": "region",
+      "create_when": "resource region grouping is enabled and region has discovered resources",
+      "asset_logical_match": "region"
+    },
+    {
+      "type": "vpc",
+      "create_when": "discovered VpcId exists",
+      "asset_logical_match": "virtual-private-cloud-vpc"
+    },
+    {
+      "type": "availability-zone",
+      "create_when": "discovered availability zone metadata exists",
+      "asset_logical_match": null
+    },
+    {
+      "type": "public-subnet",
+      "create_when": "subnet classification is verified as public",
+      "asset_logical_match": "public-subnet"
+    },
+    {
+      "type": "private-subnet",
+      "create_when": "subnet classification is verified as private or isolated",
+      "asset_logical_match": "private-subnet"
+    },
+    {
+      "type": "security-group",
+      "create_when": "detailed network view explicitly requests SG visualization",
+      "asset_logical_match": null
+    },
+    {
+      "type": "auto-scaling-group",
+      "create_when": "ASG discovered and detailed view enabled",
+      "asset_logical_match": "auto-scaling-group"
+    }
+  ],
+  "rendering": "Boundaries must be dynamically sized containers. Group SVGs are visual references/icons, not fixed-size containers."
+}

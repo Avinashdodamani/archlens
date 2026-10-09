@@ -22,7 +22,126 @@ import {
   FunnelIcon,
   EyeIcon,
   Cog6ToothIcon,
+  DocumentDuplicateIcon,
+  CheckIcon,
+  XMarkIcon,
+  ArrowTopRightOnSquareIcon,
+  BookOpenIcon,
 } from '@heroicons/react/24/outline';
+
+const TRUST_POLICY_JSON = `{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Effect": "Allow",
+      "Principal": {
+        "AWS": "arn:aws:iam::515554959344:role/archlens-lambda-execution-role"
+      },
+      "Action": "sts:AssumeRole"
+    }
+  ]
+}`;
+
+const CLIENT_CFT_TEMPLATE = `AWSTemplateFormatVersion: '2010-09-09'
+Description: 'ArchLens - Read-Only Cross-Account Role for Architecture Discovery'
+
+Parameters:
+  ArchLensAccountId:
+    Type: String
+    Default: '515554959344'
+    Description: 'AWS Account ID of the ArchLens platform'
+
+  ExternalId:
+    Type: String
+    Default: ''
+    Description: 'Optional External ID for confused-deputy protection'
+
+Conditions:
+  HasExternalId: !Not [!Equals [!Ref ExternalId, '']]
+
+Resources:
+  ArchLensClientRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: ArchLens-Client-Scan-Role
+      Description: 'Allows ArchLens to discover and visualize architecture in this account (read-only)'
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              AWS: !Sub 'arn:aws:iam::\${ArchLensAccountId}:role/archlens-lambda-execution-role'
+            Action: 'sts:AssumeRole'
+            Condition: !If
+              - HasExternalId
+              - StringEquals:
+                  sts:ExternalId: !Ref ExternalId
+              - !Ref 'AWS::NoValue'
+      ManagedPolicyArns:
+        - 'arn:aws:iam::aws:policy/SecurityAudit'
+        - 'arn:aws:iam::aws:policy/ReadOnlyAccess'
+
+Outputs:
+  RoleArn:
+    Description: 'Enter this Role ARN in the ArchLens dashboard'
+    Value: !GetAtt ArchLensClientRole.Arn`;
+
+const TERRAFORM_TEMPLATE = `# ArchLens - Read-Only Cross-Account Role for Architecture Discovery
+variable "archlens_account_id" {
+  type        = string
+  default     = "515554959344"
+  description = "AWS Account ID of the ArchLens platform"
+}
+
+variable "external_id" {
+  type        = string
+  default     = ""
+  description = "Optional External ID for confused-deputy protection"
+}
+
+data "aws_iam_policy_document" "archlens_trust" {
+  statement {
+    effect  = "Allow"
+    actions = ["sts:AssumeRole"]
+
+    principals {
+      type        = "AWS"
+      identifiers = [
+        "arn:aws:iam::\${var.archlens_account_id}:role/archlens-lambda-execution-role"
+      ]
+    }
+
+    dynamic "condition" {
+      for_each = var.external_id != "" ? [1] : []
+      content {
+        test     = "StringEquals"
+        variable = "sts:ExternalId"
+        values   = [var.external_id]
+      }
+    }
+  }
+}
+
+resource "aws_iam_role" "archlens_role" {
+  name               = "ArchLens-Client-Scan-Role"
+  description        = "Allows ArchLens to discover and visualize architecture in this account (read-only)"
+  assume_role_policy = data.aws_iam_policy_document.archlens_trust.json
+}
+
+resource "aws_iam_role_policy_attachment" "security_audit" {
+  role       = aws_iam_role.archlens_role.name
+  policy_arn = "arn:aws:iam::aws:policy/SecurityAudit"
+}
+
+resource "aws_iam_role_policy_attachment" "read_only" {
+  role       = aws_iam_role.archlens_role.name
+  policy_arn = "arn:aws:iam::aws:policy/ReadOnlyAccess"
+}
+
+output "archlens_role_arn" {
+  description = "Enter this Role ARN in the ArchLens dashboard"
+  value       = aws_iam_role.archlens_role.arn
+}`;
 
 export default function YourArchPage() {
   const navigate = useNavigate();
@@ -33,26 +152,58 @@ export default function YourArchPage() {
     scanResult, setScanResult,
     setCurrentStep, setLoading, isLoading,
     connectedAccounts, addConnectedAccount, removeConnectedAccount,
-    savedScans, saveScan, deleteScan, loadScan,
+    savedScans, saveScan, deleteScan, loadScan, syncScansFromBackend,
     searchQuery, setSearchQuery,
     filterType, setFilterType,
     diagramViewMode, setDiagramViewMode,
     darkMode,
   } = useAppStore();
 
+  useEffect(() => {
+    syncScansFromBackend();
+  }, []);
+
+  // Ensure roleArn is always filled if an account exists or scanResult is loaded
+  useEffect(() => {
+    let activeRole = roleArn;
+    if (!activeRole) {
+      if (connectedAccounts.length > 0 && connectedAccounts[0].roleArn) {
+        activeRole = connectedAccounts[0].roleArn;
+      } else if (scanResult?.accountId) {
+        activeRole = `arn:aws:iam::${scanResult.accountId}:role/archlens-client-readonly-role`;
+      }
+    }
+    if (activeRole && activeRole.includes('arn:aws:iam://')) {
+      activeRole = activeRole.replace('arn:aws:iam://', 'arn:aws:iam::');
+    }
+    if (activeRole && activeRole !== roleArn) {
+      setRoleArn(activeRole);
+    }
+  }, [roleArn, connectedAccounts, scanResult, setRoleArn]);
+
   const [externalId, setExternalId] = useState('');
   const [showAdvanced, setShowAdvanced] = useState(false);
   const [viewMode, setViewMode] = useState<'diagram' | 'table'>('diagram');
   const [showAddAccount, setShowAddAccount] = useState(false);
+  const [showOnboardingModal, setShowOnboardingModal] = useState(false);
+  const [onboardingTab, setOnboardingTab] = useState<'trust' | 'cft' | 'terraform'>('trust');
+  const [copiedTrust, setCopiedTrust] = useState(false);
+  const [copiedCft, setCopiedCft] = useState(false);
+  const [copiedTf, setCopiedTf] = useState(false);
   const [newAccountName, setNewAccountName] = useState('');
   const [newAccountId, setNewAccountId] = useState('');
   const [newRoleArn, setNewRoleArn] = useState('');
   const [showScanHistory, setShowScanHistory] = useState(false);
 
-  // Step Functions orchestration (SOW Section 6)
+  // Step Functions orchestration (SOW Section 6) — manual approval at each gate
   const [wfArn, setWfArn] = useState('');
   const [wfStatus, setWfStatus] = useState('');
   const [wfRunning, setWfRunning] = useState(false);
+  const [wfPending, setWfPending] = useState<{ token: string; receiptHandle?: string; message?: string } | null>(null);
+
+  // Discovery error state (shows the real failure reason, not a dummy value)
+  const [scanError, setScanError] = useState<string | null>(null);
+  const [showErrorDetails, setShowErrorDetails] = useState(false);
 
   // Tag-based grouping (SOW Section 4.2)
   const [groupByTag, setGroupByTag] = useState('');
@@ -91,8 +242,39 @@ export default function YourArchPage() {
     return Object.entries(groups).sort((a, b) => b[1] - a[1]);
   })();
 
+  function copyToClipboard(text: string, type: 'trust' | 'cft' | 'tf') {
+    navigator.clipboard.writeText(text);
+    if (type === 'trust') {
+      setCopiedTrust(true);
+      setTimeout(() => setCopiedTrust(false), 2000);
+    } else if (type === 'cft') {
+      setCopiedCft(true);
+      setTimeout(() => setCopiedCft(false), 2000);
+    } else {
+      setCopiedTf(true);
+      setTimeout(() => setCopiedTf(false), 2000);
+    }
+    toast.success('Copied to clipboard!');
+  }
+
+  function downloadFile(content: string, filename: string, type: string) {
+    const blob = new Blob([content], { type });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = filename;
+    a.click();
+    URL.revokeObjectURL(url);
+    toast.success(`Downloaded ${filename}`);
+  }
+
   async function handleRunWorkflow() {
-    if (!roleArn) {
+    let targetArn = (roleArn || '').trim();
+    if (targetArn.startsWith('arn:aws:iam://')) {
+      targetArn = targetArn.replace('arn:aws:iam://', 'arn:aws:iam::');
+      setRoleArn(targetArn);
+    }
+    if (!targetArn) {
       toast.error('Please enter the IAM Role ARN');
       return;
     }
@@ -101,7 +283,7 @@ export default function YourArchPage() {
     try {
       const res = await workflow({
         action: 'start',
-        roleArn,
+        roleArn: targetArn,
         region: selectedRegion === 'all' ? 'us-east-1' : selectedRegion,
         regions: selectedRegion === 'all' ? undefined : [selectedRegion],
         accountId: newAccountId || undefined,
@@ -126,40 +308,119 @@ export default function YourArchPage() {
   }
 
   async function pollWorkflow(arn: string) {
-    // Poll status; auto-advances approval gates server-side so the run
-    // progresses to completion and shows a clear final status.
-    for (let i = 0; i < 40; i++) {
+    // Poll status. The workflow PAUSES at each human-approval gate and never
+    // proceeds automatically — the user must approve each step (production-safe).
+    for (let i = 0; i < 60; i++) {
       await new Promise((r) => setTimeout(r, 3000));
       const res = await workflow({ action: 'status', executionArn: arn });
       if (res.error) break;
-      const d = res.data as { status: string; autoAdvanced?: string };
+      const d = res.data as {
+        status: string;
+        awaitingApproval?: boolean;
+        pendingApproval?: { message?: string; taskToken?: string; receiptHandle?: string };
+      };
       if (d.status === 'SUCCEEDED') {
-        setWfStatus('Completed — discovery, analysis, and script generation finished.');
+        setWfStatus('Completed — all approved stages finished successfully.');
+        setWfPending(null);
         toast.success('Workflow completed successfully.');
         break;
       }
       if (d.status === 'FAILED' || d.status === 'ABORTED') {
         setWfStatus(d.status === 'FAILED' ? 'Failed' : 'Stopped');
+        setWfPending(null);
         break;
       }
-      setWfStatus(d.autoAdvanced ? `Running — ${d.autoAdvanced}` : 'Running — orchestrating discovery, analysis, and script generation…');
+      if (d.awaitingApproval && d.pendingApproval?.taskToken) {
+        // Populate the UI immediately so the user can inspect their architecture while approving
+        const disc = (d.pendingApproval as any).discoveryResult;
+        if (disc) {
+          try {
+            const parsed = typeof disc.body === 'string' ? JSON.parse(disc.body) : (disc.body || disc);
+            if (parsed && (parsed.resources || parsed.scanId)) {
+              finalizeDiscovery(parsed);
+            }
+          } catch (e) {
+            console.warn('Could not parse discoveryResult from workflow approval:', e);
+          }
+        }
+
+        // Pause for manual approval — stop polling and wait for the user.
+        setWfStatus(`Awaiting your approval — ${d.pendingApproval.message || 'review and continue'}`);
+        setWfPending({ token: d.pendingApproval.taskToken, receiptHandle: d.pendingApproval.receiptHandle, message: d.pendingApproval.message });
+        setWfRunning(false);
+        return;
+      }
+      setWfStatus('Running — please wait…');
     }
     setWfRunning(false);
   }
 
+  async function handleApproveWorkflowStep() {
+    if (!wfPending) return;
+    setWfRunning(true);
+    setWfStatus('Approved — continuing…');
+    const res = await workflow({
+      action: 'resume',
+      taskToken: wfPending.token,
+      receiptHandle: wfPending.receiptHandle,
+      output: {
+        approved: true,
+        pillars: [
+          'operational_excellence',
+          'security',
+          'reliability',
+          'performance_efficiency',
+          'cost_optimization',
+          'sustainability',
+        ],
+      },
+    });
+    setWfPending(null);
+    if (res.error) {
+      toast.error(res.error);
+      setWfRunning(false);
+      return;
+    }
+    pollWorkflow(wfArn);
+  }
+
+  // Persist a completed discovery result to the UI + scan history.
+  function finalizeDiscovery(data: any) {
+    setScanResult(data);
+    setCurrentStep('discovered');
+    const accountName = connectedAccounts.find((a) => a.roleArn === roleArn)?.accountName || 'My Account';
+    saveScan({
+      scanId: data.scanId,
+      accountName,
+      accountId: data.accountId,
+      region: selectedRegion,
+      timestamp: data.timestamp,
+      resourceCount: data.summary.total_resources,
+      scanResult: data,
+    });
+    toast.success(`Discovered ${data.summary.total_resources} resources.`);
+  }
+
   async function handleDiscover() {
-    if (!roleArn) {
+    let targetArn = (roleArn || '').trim();
+    if (targetArn.startsWith('arn:aws:iam://')) {
+      targetArn = targetArn.replace('arn:aws:iam://', 'arn:aws:iam::');
+      setRoleArn(targetArn);
+    }
+
+    if (!targetArn) {
       toast.error('Please enter the IAM Role ARN');
       return;
     }
 
-    if (!roleArn.startsWith('arn:aws:iam::') || !roleArn.includes(':role/')) {
+    if (!targetArn.startsWith('arn:aws:iam::') || !targetArn.includes(':role/')) {
       toast.error('Invalid Role ARN format. Expected: arn:aws:iam::<account-id>:role/<role-name>');
       return;
     }
 
     setLoading(true);
     setCurrentStep('discovering');
+    setScanError(null);
 
     try {
       const regions = selectedRegion === 'all'
@@ -167,36 +428,26 @@ export default function YourArchPage() {
         : [selectedRegion];
 
       const response = await discoverResources({
-        roleArn,
+        roleArn: targetArn,
         region: selectedRegion === 'all' ? 'us-east-1' : selectedRegion,
         regions,
         ...(externalId && { externalId }),
       });
 
       if (response.error) {
-        toast.error(response.error);
+        // Show the actual backend error (never a dummy/sample message).
+        setScanError(response.error);
+        toast.error('Architecture discovery failed.');
         setCurrentStep('idle');
       } else {
         const data = response.data as any;
-        setScanResult(data);
-        setCurrentStep('discovered');
-
-        // Auto-save scan to history
-        const accountName = connectedAccounts.find(a => a.roleArn === roleArn)?.accountName || 'My Account';
-        saveScan({
-          scanId: data.scanId,
-          accountName,
-          accountId: data.accountId,
-          region: selectedRegion,
-          timestamp: data.timestamp,
-          resourceCount: data.summary.total_resources,
-          scanResult: data,
-        });
-
-        toast.success(`Scan #${savedScans.length + 1}: Discovered ${data.summary.total_resources} resources!`);
+        finalizeDiscovery(data);
       }
     } catch (error) {
-      toast.error('Discovery failed. Check the Role ARN and permissions.');
+      // Capture the real error message for troubleshooting.
+      const msg = error instanceof Error ? error.message : 'Network error while contacting the discovery service.';
+      setScanError(msg);
+      toast.error('Architecture discovery failed.');
       setCurrentStep('idle');
     } finally {
       setLoading(false);
@@ -222,7 +473,7 @@ export default function YourArchPage() {
     toast.success('Account connected!');
   }
 
-  function handleSelectAccount(account: typeof connectedAccounts[0]) {
+  function handleSelectAccount(account: { roleArn: string; externalId?: string }) {
     setRoleArn(account.roleArn);
     if (account.externalId) setExternalId(account.externalId);
   }
@@ -250,17 +501,16 @@ export default function YourArchPage() {
       }
 
       const { toPng, toSvg } = await import('html-to-image');
-      const exportBg = darkMode ? '#0d1117' : '#FFFFFF';
+      const exportBg = darkMode ? '#0b1120' : '#FFFFFF';
 
-      // Compute the bounding box of all nodes (in flow coordinates) so we can
-      // export the entire graph regardless of current zoom/pan.
       const nodeEls = Array.from(element.querySelectorAll('.react-flow__node')) as HTMLElement[];
       if (nodeEls.length === 0) {
         toast.error('Diagram not ready');
         return;
       }
 
-      // Read current viewport transform (scale) to convert offsets to flow coords.
+      // Read current viewport transform (scale) accurately
+      const viewRect = viewport.getBoundingClientRect();
       const transform = window.getComputedStyle(viewport).transform;
       let scale = 1;
       if (transform && transform !== 'none') {
@@ -268,20 +518,24 @@ export default function YourArchPage() {
         scale = m.a || 1;
       }
 
-      // Node offsetLeft/Top are in flow coordinate space (unscaled).
+      // Compute exact node bounds in unscaled flow coordinates using getBoundingClientRect
       let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
       nodeEls.forEach((n) => {
-        const left = n.offsetLeft;
-        const top = n.offsetTop;
+        const r = n.getBoundingClientRect();
+        const left = (r.left - viewRect.left) / scale;
+        const top = (r.top - viewRect.top) / scale;
+        const right = left + r.width / scale;
+        const bottom = top + r.height / scale;
+
         minX = Math.min(minX, left);
         minY = Math.min(minY, top);
-        maxX = Math.max(maxX, left + n.offsetWidth);
-        maxY = Math.max(maxY, top + n.offsetHeight);
+        maxX = Math.max(maxX, right);
+        maxY = Math.max(maxY, bottom);
       });
 
       const pad = 60;
-      const graphW = Math.ceil(maxX - minX + pad * 2);
-      const graphH = Math.ceil(maxY - minY + pad * 2);
+      const graphW = Math.max(Math.ceil(maxX - minX + pad * 2), 800);
+      const graphH = Math.max(Math.ceil(maxY - minY + pad * 2), 600);
 
       const opts = {
         backgroundColor: exportBg,
@@ -290,21 +544,21 @@ export default function YourArchPage() {
         width: graphW,
         height: graphH,
         style: {
-          // Shift the viewport so the top-left node aligns to the export origin,
-          // and neutralize zoom so nothing is clipped.
           transform: `translate(${pad - minX}px, ${pad - minY}px) scale(1)`,
           transformOrigin: 'top left',
+          width: `${graphW}px`,
+          height: `${graphH}px`,
         },
       };
 
       if (format === 'png') {
         const dataUrl = await toPng(viewport, opts);
         triggerDownload(dataUrl, `archlens-architecture-${scanId}.png`);
-        toast.success('PNG downloaded!');
+        toast.success('PNG downloaded successfully!');
       } else if (format === 'svg') {
         const dataUrl = await toSvg(viewport, opts);
         triggerDownload(dataUrl, `archlens-architecture-${scanId}.svg`);
-        toast.success('SVG downloaded!');
+        toast.success('SVG downloaded successfully!');
       } else if (format === 'pdf') {
         const dataUrl = await toPng(viewport, opts);
         const { jsPDF } = await import('jspdf');
@@ -318,11 +572,8 @@ export default function YourArchPage() {
         });
         pdf.addImage(dataUrl, 'PNG', 0, 0, img.width / 2, img.height / 2);
         pdf.save(`archlens-architecture-${scanId}.pdf`);
-        toast.success('PDF downloaded!');
+        toast.success('PDF downloaded successfully!');
       }
-
-      // ignore scale — kept for potential future use
-      void scale;
     } catch (err) {
       console.error('Export error:', err);
       toast.error('Download failed. Try draw.io export instead.');
@@ -380,6 +631,17 @@ export default function YourArchPage() {
   }) || [];
 
   const resourceTypes = [...new Set(scanResult?.resources.map(r => r.type) || [])].sort();
+
+  const effectiveAccounts = connectedAccounts.length > 0 ? connectedAccounts.map(a => ({
+    ...a,
+    roleArn: (a.roleArn || '').replace('arn:aws:iam://', 'arn:aws:iam::'),
+  })) : (scanResult?.accountId ? [{
+    id: `acc-${scanResult.accountId}`,
+    accountName: 'Production AWS Account',
+    accountId: scanResult.accountId,
+    roleArn: (roleArn || `arn:aws:iam::${scanResult.accountId}:role/archlens-client-readonly-role`).replace('arn:aws:iam://', 'arn:aws:iam::'),
+    addedAt: scanResult.timestamp || new Date().toISOString(),
+  }] : []);
 
   return (
     <div className="space-y-6 animate-fade-in">
@@ -442,36 +704,105 @@ export default function YourArchPage() {
             <GlobeAltIcon className="w-5 h-5 text-primary-400" />
             Connect AWS Account
           </h2>
-          <button onClick={() => setShowAddAccount(!showAddAccount)} className="btn-secondary text-sm flex items-center gap-1">
-            <PlusIcon className="w-4 h-4" /> Save Account
-          </button>
+          <div className="flex items-center gap-2">
+            <button
+              onClick={() => setShowOnboardingModal(true)}
+              className="btn-secondary text-sm flex items-center gap-1.5 text-primary-400 border-primary-500/30 hover:border-primary-500/60"
+            >
+              <BookOpenIcon className="w-4 h-4" /> Client Setup Guide (CFT &amp; Trust Policy)
+            </button>
+            <button onClick={() => setShowAddAccount(!showAddAccount)} className="btn-secondary text-sm flex items-center gap-1">
+              <PlusIcon className="w-4 h-4" /> Save Account
+            </button>
+          </div>
         </div>
 
+        {/* Active Connected Account Banner (In sync with Executive Dashboard) */}
+        {(effectiveAccounts.length > 0 || scanResult) && (
+          <div className="mb-5 p-3.5 bg-gradient-to-r from-emerald-500/10 via-dark-800 to-dark-900 border border-emerald-500/30 rounded-xl flex flex-col sm:flex-row sm:items-center justify-between gap-3 shadow-sm">
+            <div className="flex items-center gap-3">
+              <span className="relative flex h-3 w-3">
+                <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75" />
+                <span className="relative inline-flex rounded-full h-3 w-3 bg-emerald-500" />
+              </span>
+              <div>
+                <div className="flex items-center gap-2">
+                  <span className="text-xs font-semibold uppercase tracking-wider text-gray-400">Connected AWS Account:</span>
+                  <span className="text-sm font-mono font-bold text-white">
+                    {scanResult?.accountId || effectiveAccounts[0]?.accountId || '515554959344'}
+                  </span>
+                  <span className="text-[10px] font-bold uppercase tracking-wider bg-emerald-500/20 text-emerald-400 border border-emerald-500/30 px-2 py-0.5 rounded-full">
+                    Active
+                  </span>
+                </div>
+                <p className="text-xs text-gray-400 mt-0.5">
+                  Synchronized with Executive Dashboard • {scanResult ? `${scanResult.resources?.length || scanResult.summary?.total_resources || 0} resources discovered in ${scanResult.regions?.[0] || selectedRegion}` : 'Ready for architecture discovery'}
+                </p>
+              </div>
+            </div>
+            <div className="flex items-center gap-2 self-start sm:self-center">
+              <span className="text-xs text-gray-400">Active IAM Role:</span>
+              <code className="text-xs text-primary-300 bg-dark-900/90 px-2.5 py-1 rounded-md border border-dark-700 font-mono" title={roleArn || effectiveAccounts[0]?.roleArn}>
+                {((roleArn || effectiveAccounts[0]?.roleArn || `arn:aws:iam::${scanResult?.accountId || '515554959344'}:role/archlens-client-readonly-role`).split('/').pop())}
+              </code>
+            </div>
+          </div>
+        )}
+
         {/* Saved Accounts */}
-        {connectedAccounts.length > 0 && (
+        {effectiveAccounts.length > 0 && (
           <div className="mb-4">
-            <p className="text-xs text-gray-500 mb-2">Saved Accounts (click to select)</p>
-            <div className="flex flex-wrap gap-2">
-              {connectedAccounts.map((account) => (
-                <button
-                  key={account.id}
-                  onClick={() => handleSelectAccount(account)}
-                  className={`px-3 py-2 rounded-lg border text-sm transition-colors flex items-center gap-2 ${
-                    roleArn === account.roleArn
-                      ? 'border-primary-500 bg-primary-500/10 text-primary-300'
-                      : 'border-dark-600 bg-dark-900 text-gray-300 hover:border-dark-500'
-                  }`}
-                >
-                  <span className="font-medium">{account.accountName}</span>
-                  <span className="text-xs text-gray-500">{account.accountId}</span>
-                  <button
-                    onClick={(e) => { e.stopPropagation(); removeConnectedAccount(account.id); }}
-                    className="text-red-400 hover:text-red-300 ml-1"
+            <div className="flex items-center justify-between mb-2">
+              <p className="text-xs font-semibold text-gray-400 uppercase tracking-wider">Saved AWS Accounts ({effectiveAccounts.length})</p>
+              <span className="text-[11px] text-gray-500">Click any account to auto-fill</span>
+            </div>
+            <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-2.5">
+              {effectiveAccounts.map((account) => {
+                const isSelected = (roleArn && account.roleArn && (roleArn === account.roleArn || roleArn.includes(account.accountId))) || (effectiveAccounts.length === 1);
+                return (
+                  <div
+                    key={account.id}
+                    onClick={() => handleSelectAccount(account)}
+                    className={`p-3 rounded-xl border text-left transition-all cursor-pointer flex flex-col justify-between group relative ${
+                      isSelected
+                        ? 'border-primary-500 bg-primary-500/10 shadow-sm shadow-primary-500/20 ring-1 ring-primary-500/30'
+                        : 'border-dark-700 bg-dark-900/80 hover:border-dark-600 hover:bg-dark-800/60'
+                    }`}
                   >
-                    <TrashIcon className="w-3 h-3" />
-                  </button>
-                </button>
-              ))}
+                    <div className="flex items-center justify-between gap-2 mb-1.5">
+                      <span className="font-semibold text-sm text-white truncate group-hover:text-primary-300 transition-colors">
+                        {account.accountName}
+                      </span>
+                      {connectedAccounts.length > 0 && (
+                        <button
+                          onClick={(e) => { e.stopPropagation(); removeConnectedAccount(account.id); }}
+                          className="text-gray-500 hover:text-red-400 p-1 rounded-md transition-colors"
+                          title="Remove saved account"
+                        >
+                          <TrashIcon className="w-3.5 h-3.5" />
+                        </button>
+                      )}
+                    </div>
+                    <div className="text-xs font-mono text-gray-400 space-y-0.5">
+                      <p className="flex items-center justify-between">
+                        <span className="text-gray-500 font-sans text-[11px]">ID:</span>
+                        <span>{account.accountId || '—'}</span>
+                      </p>
+                      <p className="flex items-center justify-between text-[11px]">
+                        <span className="text-gray-500 font-sans">Role:</span>
+                        <span className="truncate max-w-[150px] text-gray-300" title={account.roleArn}>
+                          {account.roleArn.split('/').pop() || account.roleArn}
+                        </span>
+                      </p>
+                    </div>
+                    {isSelected && (
+                      <span className="absolute top-2 right-8 text-[10px] font-bold uppercase tracking-wider text-primary-400 bg-primary-500/20 px-1.5 py-0.5 rounded">
+                        Active
+                      </span>
+                    )}
+                  </div>
+                );
+              })}
             </div>
           </div>
         )}
@@ -532,9 +863,9 @@ export default function YourArchPage() {
           </div>
         </div>
 
-        <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
+        <div className="grid grid-cols-1 lg:grid-cols-12 gap-4">
           {/* Role ARN Input */}
-          <div className="lg:col-span-2">
+          <div className="lg:col-span-6">
             <label className="block text-sm font-medium text-gray-300 mb-1">
               IAM Role ARN <span className="text-red-400">*</span>
             </label>
@@ -543,12 +874,29 @@ export default function YourArchPage() {
               value={roleArn}
               onChange={(e) => setRoleArn(e.target.value)}
               className="input-field font-mono text-sm"
-              placeholder="arn:aws:iam::123456789012:role/ArchLens-ReadOnly-Role"
+              placeholder="arn:aws:iam::123456789012:role/ArchLens-Client-Scan-Role"
             />
           </div>
 
+          {/* External ID Input */}
+          <div className="lg:col-span-3">
+            <label className="block text-sm font-medium text-gray-300 mb-1">
+              External ID <span className="text-gray-500 text-xs font-normal">(Optional)</span>
+            </label>
+            <input
+              type="text"
+              value={externalId}
+              onChange={(e) => setExternalId(e.target.value)}
+              className="input-field font-mono text-sm"
+              placeholder="e.g., client-secret-id"
+            />
+            <p className="text-[11px] text-gray-500 mt-1">
+              Protects against AWS Confused Deputy. Use if your role requires sts:ExternalId.
+            </p>
+          </div>
+
           {/* Region Selector */}
-          <div>
+          <div className="lg:col-span-3">
             <label className="block text-sm font-medium text-gray-300 mb-1">Region</label>
             <select
               value={selectedRegion}
@@ -629,11 +977,68 @@ export default function YourArchPage() {
               : wfStatus === 'Failed' || wfStatus === 'Stopped' ? 'bg-red-400'
               : 'bg-blue-400 animate-pulse'
             }`} />
-            <div className="min-w-0">
-              <p className="text-sm text-gray-200">Automated workflow: <span className="font-medium">{wfStatus}</span></p>
+            <div className="min-w-0 flex-1">
+              <p className="text-sm text-gray-200">Guided workflow: <span className="font-medium">{wfStatus}</span></p>
               <p className="text-[11px] text-gray-500">
-                Runs the full lifecycle as an orchestrated AWS Step Functions workflow: discovery, Well-Architected analysis, and script generation.
+                Each stage — discovery, Well-Architected analysis, script generation, backup, and deployment — pauses for your explicit approval. No change is applied automatically.
               </p>
+            </div>
+            {wfPending && (
+              <button onClick={handleApproveWorkflowStep} className="btn-primary text-sm flex-shrink-0">
+                Review &amp; Approve
+              </button>
+            )}
+          </div>
+        )}
+
+        {/* Discovery error state (shows the real failure reason) */}
+        {scanError && (
+          <div className="mt-4 p-4 bg-red-500/10 border border-red-500/30 rounded-lg">
+            <div className="flex items-start gap-3">
+              <div className="p-2 bg-red-500/20 rounded-lg flex-shrink-0">
+                <InformationCircleIcon className="w-5 h-5 text-red-400" />
+              </div>
+              <div className="flex-1 min-w-0">
+                <p className="text-sm font-semibold text-red-300">
+                  {scanError.includes('sts:AssumeRole')
+                    ? 'Scan Failed: STS AssumeRole Access Denied (Trust Relationship Required)'
+                    : 'Architecture Discovery Failed'}
+                </p>
+                <p className="text-sm text-gray-300 mt-1">
+                  {scanError.includes('sts:AssumeRole') ? (
+                    <>
+                      The target client IAM role does not trust ArchLens yet. In AWS IAM cross-account access, the client role must add ArchLens account{' '}
+                      <code className="px-1.5 py-0.5 bg-dark-900 rounded text-primary-300 font-mono text-xs">515554959344</code>{' '}
+                      to its <strong>Trust Relationship (AssumeRolePolicyDocument)</strong>.
+                    </>
+                  ) : (
+                    'We could not complete the architecture discovery. Please review the details below and try again.'
+                  )}
+                </p>
+                <div className="mt-3 flex flex-wrap items-center gap-3">
+                  <button
+                    onClick={() => setShowOnboardingModal(true)}
+                    className="btn-primary text-xs flex items-center gap-1.5 py-1.5 px-3"
+                  >
+                    <BookOpenIcon className="w-3.5 h-3.5" />
+                    Fix in 10 Seconds (Trust Policy &amp; CFT)
+                  </button>
+                  <button
+                    onClick={() => setShowErrorDetails((s) => !s)}
+                    className="text-xs text-gray-400 hover:text-gray-200 underline"
+                  >
+                    {showErrorDetails ? 'Hide technical error' : 'Show technical error'}
+                  </button>
+                  <button onClick={handleDiscover} className="text-xs text-primary-400 hover:text-primary-300 font-medium">
+                    Retry Scan
+                  </button>
+                </div>
+                {showErrorDetails && (
+                  <pre className="mt-3 p-3 bg-dark-950 border border-dark-700 rounded-lg text-[11px] text-red-300 font-mono whitespace-pre-wrap break-words">
+                    {scanError}
+                  </pre>
+                )}
+              </div>
             </div>
           </div>
         )}
@@ -670,8 +1075,10 @@ export default function YourArchPage() {
                   >
                     <img
                       src={getServiceIconPath(type, darkMode)}
-                      alt={type}
-                      className="w-9 h-9 mx-auto mb-2"
+                      alt=""
+                      aria-hidden="true"
+                      className="w-9 h-9 mx-auto mb-2 object-contain"
+                      onError={(e) => { (e.currentTarget as HTMLImageElement).style.visibility = 'hidden'; }}
                     />
                     <p className="text-xl font-bold text-white">{count as number}</p>
                     <p className="text-xs text-gray-400">{type}</p>
@@ -742,9 +1149,14 @@ export default function YourArchPage() {
                 {(['logical', 'network', 'dataflow', 'cost', 'security'] as const).map(mode => (
                   <button
                     key={mode}
-                    onClick={() => setDiagramViewMode(mode)}
-                    className={`px-2 py-1 rounded text-xs font-medium transition-colors ${
-                      diagramViewMode === mode ? 'bg-primary-500/20 text-primary-400' : 'text-gray-500 hover:text-gray-300'
+                    onClick={() => {
+                      setDiagramViewMode(mode);
+                      useAppStore.getState().setDiagramViewMode(mode);
+                    }}
+                    className={`px-2.5 py-1 rounded text-xs font-medium transition-all ${
+                      diagramViewMode === mode
+                        ? 'bg-primary-500 text-white shadow-sm font-semibold'
+                        : 'text-gray-400 hover:text-white hover:bg-dark-700/60'
                     }`}
                   >
                     {mode === 'dataflow' ? 'Data Flow' : mode.charAt(0).toUpperCase() + mode.slice(1)}
@@ -784,11 +1196,12 @@ export default function YourArchPage() {
 
             {/* Architecture Diagram */}
             {viewMode === 'diagram' && (
-              <div ref={diagramRef} key={`diagram-${darkMode}`} className="h-[650px] w-full rounded-xl overflow-hidden border border-dark-700/50">
+              <div ref={diagramRef} key={`diagram-${darkMode}-${diagramViewMode}`} className="h-[650px] w-full rounded-xl overflow-hidden border border-dark-700/50">
                 <ArchitectureDiagram
                   resources={scanResult.resources}
                   relationships={scanResult.relationships}
                   servicesFootprint={scanResult.servicesFootprint}
+                  viewMode={diagramViewMode}
                 />
               </div>
             )}
@@ -863,6 +1276,181 @@ export default function YourArchPage() {
             )}
           </div>
         </>
+      )}
+      {/* Client Account Onboarding Guide Modal */}
+      {showOnboardingModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/70 backdrop-blur-sm animate-fade-in">
+          <div className="card w-full max-w-3xl max-h-[90vh] flex flex-col overflow-hidden shadow-2xl border-primary-500/40">
+            {/* Modal Header */}
+            <div className="flex items-center justify-between pb-4 border-b border-dark-700">
+              <div className="flex items-center gap-2">
+                <ShieldCheckIcon className="w-6 h-6 text-primary-400" />
+                <div>
+                  <h3 className="text-lg font-bold text-white">Client Account Setup Guide</h3>
+                  <p className="text-xs text-gray-400">Grant read-only discovery permissions to ArchLens</p>
+                </div>
+              </div>
+              <button
+                onClick={() => setShowOnboardingModal(false)}
+                className="p-1 text-gray-400 hover:text-white rounded-lg hover:bg-dark-800 transition-colors"
+              >
+                <XMarkIcon className="w-5 h-5" />
+              </button>
+            </div>
+
+            {/* Modal Tabs */}
+            <div className="flex border-b border-dark-700 bg-dark-900/50 px-2 pt-2 gap-1">
+              <button
+                onClick={() => setOnboardingTab('trust')}
+                className={`px-4 py-2 text-xs font-semibold rounded-t-lg transition-colors border-b-2 ${
+                  onboardingTab === 'trust'
+                    ? 'border-primary-500 text-primary-400 bg-dark-800'
+                    : 'border-transparent text-gray-400 hover:text-gray-200'
+                }`}
+              >
+                1. Existing Role Trust Policy (10s Fix)
+              </button>
+              <button
+                onClick={() => setOnboardingTab('cft')}
+                className={`px-4 py-2 text-xs font-semibold rounded-t-lg transition-colors border-b-2 ${
+                  onboardingTab === 'cft'
+                    ? 'border-primary-500 text-primary-400 bg-dark-800'
+                    : 'border-transparent text-gray-400 hover:text-gray-200'
+                }`}
+              >
+                2. 1-Click CloudFormation Template
+              </button>
+              <button
+                onClick={() => setOnboardingTab('terraform')}
+                className={`px-4 py-2 text-xs font-semibold rounded-t-lg transition-colors border-b-2 ${
+                  onboardingTab === 'terraform'
+                    ? 'border-primary-500 text-primary-400 bg-dark-800'
+                    : 'border-transparent text-gray-400 hover:text-gray-200'
+                }`}
+              >
+                3. Terraform Code
+              </button>
+            </div>
+
+            {/* Modal Content Body */}
+            <div className="p-6 overflow-y-auto space-y-4 flex-1">
+              {onboardingTab === 'trust' && (
+                <div className="space-y-3">
+                  <div className="p-3.5 bg-blue-500/10 border border-blue-500/20 rounded-xl text-xs text-blue-300">
+                    <strong className="text-white block mb-1 text-sm">Option A: Create a New Read-Only IAM Role in AWS Console</strong>
+                    <ol className="list-decimal list-inside space-y-1 text-gray-300">
+                      <li>Sign in to the AWS IAM Console in your client account.</li>
+                      <li>Navigate to <strong>Roles</strong> &rarr; Click <strong>Create role</strong>.</li>
+                      <li>Select <strong>AWS account</strong> &rarr; Choose <strong>Another AWS account</strong> &rarr; Enter Account ID: <code className="px-1.5 py-0.5 bg-dark-950 rounded text-primary-300 font-mono">515554959344</code>.</li>
+                      <li>(Optional) If you want confused-deputy protection, check <strong>Require external ID</strong> and enter your secret External ID.</li>
+                      <li>In permissions, attach AWS managed policies: <code className="font-mono text-purple-300">SecurityAudit</code> and <code className="font-mono text-purple-300">ReadOnlyAccess</code>.</li>
+                      <li>Name the role <code className="font-mono text-green-300">ArchLens-Client-Scan-Role</code> and click <strong>Create role</strong>.</li>
+                      <li>Copy the generated Role ARN (e.g. <code className="font-mono text-gray-400">arn:aws:iam::123456789012:role/ArchLens-Client-Scan-Role</code>) and paste it into the ArchLens form.</li>
+                    </ol>
+                  </div>
+
+                  <div className="p-3 bg-dark-900 border border-dark-700/60 rounded-xl text-xs text-gray-300">
+                    <strong className="text-white block mb-1">Option B: Use an Existing IAM Role</strong>
+                    <p className="mb-2">If you already have a designated read-only audit role (e.g. <code className="font-mono text-primary-300">ArchLens-Discovery-Role</code>), simply update its Trust Relationship with the policy below:</p>
+                    <ol className="list-decimal list-inside space-y-1 text-gray-300">
+                      <li>Open AWS IAM &rarr; <strong>Roles</strong> &rarr; Select your role.</li>
+                      <li>Click the <strong>Trust relationships</strong> tab &rarr; Click <strong>Edit trust policy</strong>.</li>
+                      <li>Paste the policy below and click <strong>Update Policy</strong>.</li>
+                    </ol>
+                  </div>
+
+                  <div className="relative">
+                    <div className="flex items-center justify-between bg-dark-950 px-3 py-1.5 rounded-t-lg border-t border-x border-dark-700">
+                      <span className="text-xs font-mono text-gray-400">TrustRelationship.json</span>
+                      <button
+                        onClick={() => copyToClipboard(TRUST_POLICY_JSON, 'trust')}
+                        className="btn-secondary text-xs flex items-center gap-1 py-1 px-2.5"
+                      >
+                        {copiedTrust ? <CheckIcon className="w-3.5 h-3.5 text-green-400" /> : <DocumentDuplicateIcon className="w-3.5 h-3.5" />}
+                        {copiedTrust ? 'Copied!' : 'Copy Policy'}
+                      </button>
+                    </div>
+                    <pre className="p-4 bg-dark-900 border border-dark-700 rounded-b-lg font-mono text-xs text-green-400 overflow-x-auto">
+                      {TRUST_POLICY_JSON}
+                    </pre>
+                  </div>
+                </div>
+              )}
+
+              {onboardingTab === 'cft' && (
+                <div className="space-y-3">
+                  <p className="text-xs text-gray-300">
+                    Deploy this CloudFormation template in the client account to automatically create the read-only IAM role with <strong>SecurityAudit</strong> and <strong>ReadOnlyAccess</strong> policies.
+                  </p>
+
+                  <div className="flex items-center gap-3">
+                    <button
+                      onClick={() => downloadFile(CLIENT_CFT_TEMPLATE, 'archlens-client-onboarding.yaml', 'text/yaml')}
+                      className="btn-primary text-xs flex items-center gap-1.5"
+                    >
+                      <ArrowDownTrayIcon className="w-4 h-4" /> Download CloudFormation YAML
+                    </button>
+                    <button
+                      onClick={() => copyToClipboard(CLIENT_CFT_TEMPLATE, 'cft')}
+                      className="btn-secondary text-xs flex items-center gap-1.5"
+                    >
+                      {copiedCft ? <CheckIcon className="w-4 h-4 text-green-400" /> : <DocumentDuplicateIcon className="w-4 h-4" />}
+                      {copiedCft ? 'Copied Template!' : 'Copy YAML'}
+                    </button>
+                    <a
+                      href="https://console.aws.amazon.com/cloudformation/home#/stacks/create/template"
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="btn-secondary text-xs flex items-center gap-1.5 text-primary-400"
+                    >
+                      <ArrowTopRightOnSquareIcon className="w-4 h-4" /> Open AWS CloudFormation Console
+                    </a>
+                  </div>
+
+                  <div className="relative mt-2">
+                    <pre className="p-4 bg-dark-900 border border-dark-700 rounded-lg font-mono text-[11px] text-gray-300 max-h-60 overflow-y-auto">
+                      {CLIENT_CFT_TEMPLATE}
+                    </pre>
+                  </div>
+                </div>
+              )}
+
+              {onboardingTab === 'terraform' && (
+                <div className="space-y-3">
+                  <p className="text-xs text-gray-300">
+                    If your client uses Terraform or OpenTofu, add this module to their infrastructure repository:
+                  </p>
+
+                  <div className="flex items-center gap-3">
+                    <button
+                      onClick={() => copyToClipboard(TERRAFORM_TEMPLATE, 'tf')}
+                      className="btn-primary text-xs flex items-center gap-1.5"
+                    >
+                      {copiedTf ? <CheckIcon className="w-4 h-4 text-green-400" /> : <DocumentDuplicateIcon className="w-4 h-4" />}
+                      {copiedTf ? 'Copied Terraform!' : 'Copy Terraform'}
+                    </button>
+                  </div>
+
+                  <div className="relative mt-2">
+                    <pre className="p-4 bg-dark-900 border border-dark-700 rounded-lg font-mono text-[11px] text-purple-300 max-h-60 overflow-y-auto">
+                      {TERRAFORM_TEMPLATE}
+                    </pre>
+                  </div>
+                </div>
+              )}
+            </div>
+
+            {/* Modal Footer */}
+            <div className="p-4 border-t border-dark-700 flex justify-end">
+              <button
+                onClick={() => setShowOnboardingModal(false)}
+                className="btn-secondary text-sm"
+              >
+                Close
+              </button>
+            </div>
+          </div>
+        </div>
       )}
     </div>
   );

@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { signIn, signUp, confirmSignUp, fetchUserAttributes } from 'aws-amplify/auth';
+import { signIn, signUp, confirmSignUp, fetchUserAttributes, resetPassword, confirmResetPassword } from 'aws-amplify/auth';
 import { useAppStore } from '../store/useAppStore';
 import toast from 'react-hot-toast';
 import {
@@ -8,7 +8,7 @@ import {
 } from '@heroicons/react/24/outline';
 import type { ComponentType, SVGProps } from 'react';
 
-type AuthMode = 'login' | 'signup' | 'confirm';
+type AuthMode = 'login' | 'signup' | 'confirm' | 'forgot' | 'reset';
 
 export default function LoginPage() {
   const { setAuth } = useAppStore();
@@ -78,6 +78,40 @@ export default function LoginPage() {
     }
   }
 
+  // Forgot password — send reset code to the registered email.
+  async function handleForgot(e: React.FormEvent) {
+    e.preventDefault();
+    setLoading(true);
+    try {
+      await resetPassword({ username: email });
+      toast.success('A password reset code has been sent to your email.');
+      setMode('reset');
+    } catch (error: unknown) {
+      const err = error as { message?: string };
+      toast.error(err.message || 'Could not start password reset');
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  // Reset password — confirm the code and set a new password.
+  async function handleReset(e: React.FormEvent) {
+    e.preventDefault();
+    setLoading(true);
+    try {
+      await confirmResetPassword({ username: email, confirmationCode: confirmCode, newPassword: password });
+      toast.success('Password changed. You can now sign in with your new password.');
+      setPassword('');
+      setConfirmCode('');
+      setMode('login');
+    } catch (error: unknown) {
+      const err = error as { message?: string };
+      toast.error(err.message || 'Password reset failed');
+    } finally {
+      setLoading(false);
+    }
+  }
+
   return (
     <div className="min-h-screen bg-dark-950 relative overflow-hidden flex flex-col lg:flex-row">
       {/* Background effects — spans full page */}
@@ -88,11 +122,15 @@ export default function LoginPage() {
       {/* Left Side — Feature Points */}
       <div className="relative z-10 w-full lg:w-1/2 flex items-center justify-center p-8 lg:p-12">
         <div className="max-w-md">
+          <div className="inline-flex items-center gap-2 px-3 py-1 rounded-full bg-primary-500/10 border border-primary-500/20 text-xs font-medium text-primary-400 mb-6">
+            <SparklesIcon className="w-3.5 h-3.5" />
+            <span>AWS Well-Architected Framework · Powered by Amazon Bedrock</span>
+          </div>
           <h2 className="text-4xl lg:text-5xl font-bold text-white mb-4 tracking-tight leading-[1.1]">
             Cloud intelligence,<br />simplified.
           </h2>
           <p className="text-gray-400 text-base mb-12 leading-relaxed">
-            See your architecture, optimize it with AI, and deploy changes safely in one click.
+            Discover your AWS architecture, analyze it with AI, identify opportunities for improvement, and review changes before deployment.
           </p>
 
           <div className="space-y-6">
@@ -113,8 +151,8 @@ export default function LoginPage() {
             />
             <FeatureItem
               Icon={LockClosedIcon}
-              title="Secure and reliable"
-              description="Automatic backups before every change, with instant rollback on failure."
+              title="Safe change management"
+              description="Review and validate proposed changes with rollback support where available."
             />
             <FeatureItem
               Icon={ChartBarIcon}
@@ -143,11 +181,15 @@ export default function LoginPage() {
               {mode === 'login' && 'Welcome Back'}
               {mode === 'signup' && 'Create Account'}
               {mode === 'confirm' && 'Verify Email'}
+              {mode === 'forgot' && 'Reset Password'}
+              {mode === 'reset' && 'Set New Password'}
             </h2>
             <p className="text-gray-400 text-sm mb-7">
               {mode === 'login' && 'Sign in to your cloud intelligence dashboard'}
               {mode === 'signup' && 'Start optimizing your AWS architecture'}
               {mode === 'confirm' && 'Enter the 6-digit code sent to your email'}
+              {mode === 'forgot' && 'Enter your email and we will send a reset code'}
+              {mode === 'reset' && 'Enter the code from your email and a new password'}
             </p>
 
             {/* Login Form */}
@@ -183,6 +225,15 @@ export default function LoginPage() {
                       {showPassword ? <EyeSlashIcon className="w-5 h-5" /> : <EyeIcon className="w-5 h-5" />}
                     </button>
                   </div>
+                  <div className="text-right mt-2">
+                    <button
+                      type="button"
+                      onClick={() => setMode('forgot')}
+                      className="text-xs text-primary-400 hover:text-primary-300 font-medium"
+                    >
+                      Forgot password?
+                    </button>
+                  </div>
                 </div>
                 <button
                   type="submit"
@@ -195,6 +246,82 @@ export default function LoginPage() {
                       Signing in...
                     </span>
                   ) : 'Sign In'}
+                </button>
+              </form>
+            )}
+
+            {/* Forgot Password Form */}
+            {mode === 'forgot' && (
+              <form onSubmit={handleForgot} className="space-y-5">
+                <div>
+                  <label className="block text-sm font-medium text-gray-300 mb-1.5">Email Address</label>
+                  <input
+                    type="email"
+                    value={email}
+                    onChange={(e) => setEmail(e.target.value)}
+                    className="input-field"
+                    placeholder="you@company.com"
+                    required
+                  />
+                  <p className="text-xs text-gray-500 mt-1.5">Enter the email you used to sign up. We will send a reset code.</p>
+                </div>
+                <button
+                  type="submit"
+                  className="w-full py-3 bg-gradient-to-r from-primary-500 to-blue-600 text-white font-semibold rounded-xl hover:from-primary-600 hover:to-blue-700 transition-all duration-200 shadow-lg shadow-primary-500/20 disabled:opacity-50"
+                  disabled={loading}
+                >
+                  {loading ? (
+                    <span className="flex items-center justify-center gap-2">
+                      <div className="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin" />
+                      Sending code...
+                    </span>
+                  ) : 'Send reset code'}
+                </button>
+              </form>
+            )}
+
+            {/* Reset Password Form */}
+            {mode === 'reset' && (
+              <form onSubmit={handleReset} className="space-y-5">
+                <div>
+                  <label className="block text-sm font-medium text-gray-300 mb-1.5">Reset Code</label>
+                  <input
+                    type="text"
+                    value={confirmCode}
+                    onChange={(e) => setConfirmCode(e.target.value)}
+                    className="input-field text-center text-2xl tracking-[0.3em] font-mono"
+                    placeholder="000000"
+                    required
+                    maxLength={6}
+                  />
+                  <p className="text-xs text-gray-500 mt-2 text-center">
+                    Code sent to <span className="text-primary-400">{email}</span>
+                  </p>
+                </div>
+                <div>
+                  <label className="block text-sm font-medium text-gray-300 mb-1.5">New Password</label>
+                  <input
+                    type="password"
+                    value={password}
+                    onChange={(e) => setPassword(e.target.value)}
+                    className="input-field"
+                    placeholder="Min 8 characters"
+                    required
+                    minLength={8}
+                  />
+                  <p className="text-xs text-gray-500 mt-1.5">Uppercase, lowercase, number and special character required.</p>
+                </div>
+                <button
+                  type="submit"
+                  className="w-full py-3 bg-gradient-to-r from-primary-500 to-blue-600 text-white font-semibold rounded-xl hover:from-primary-600 hover:to-blue-700 transition-all duration-200 shadow-lg shadow-primary-500/20 disabled:opacity-50"
+                  disabled={loading}
+                >
+                  {loading ? (
+                    <span className="flex items-center justify-center gap-2">
+                      <div className="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin" />
+                      Updating...
+                    </span>
+                  ) : 'Change password'}
                 </button>
               </form>
             )}
@@ -295,9 +422,9 @@ export default function LoginPage() {
                   </button>
                 </p>
               )}
-              {(mode === 'signup' || mode === 'confirm') && (
+              {(mode === 'signup' || mode === 'confirm' || mode === 'forgot' || mode === 'reset') && (
                 <p className="text-sm text-gray-400">
-                  Already have an account?{' '}
+                  Remember your password?{' '}
                   <button onClick={() => setMode('login')} className="text-primary-400 hover:text-primary-300 font-semibold transition-colors">
                     Sign in
                   </button>

@@ -28,6 +28,9 @@ const ICON_FILES: Record<string, string> = {
   KMS: 'arch-aws-key-management-service-64.svg',
   CloudWatch: 'arch-amazon-cloudwatch-64.svg',
   IAM: 'arch-aws-identity-and-access-management-64.svg',
+  IAMUser: 'arch-aws-identity-and-access-management-64.svg',
+  IAMRole: 'arch-aws-identity-and-access-management-64.svg',
+  ACMCertificate: 'arch-aws-certificate-manager-64.svg',
   Cognito: 'arch-amazon-cognito-64.svg',
   StepFunctions: 'arch-aws-step-functions-64.svg',
   Bedrock: 'arch-amazon-bedrock-64.svg',
@@ -47,10 +50,13 @@ const ICON_FILES: Record<string, string> = {
   AutoScaling: 'arch-amazon-ec2-auto-scaling-64.svg',
   SecurityGroup: 'arch-amazon-virtual-private-cloud-64.svg',
   Subnet: 'arch-amazon-virtual-private-cloud-64.svg',
-  InternetGateway: 'arch-amazon-virtual-private-cloud-64.svg',
-  NATGateway: 'arch-amazon-virtual-private-cloud-64.svg',
+  InternetGateway: 'resources/networking-and-content-delivery/res-amazon-vpc-internet-gateway-48.svg',
+  NATGateway: 'resources/networking-and-content-delivery/res-amazon-vpc-nat-gateway-48.svg',
+  VPCEndpoint: 'resources/networking-and-content-delivery/res-amazon-vpc-endpoints-48.svg',
   RouteTable: 'arch-amazon-virtual-private-cloud-64.svg',
   Backup: 'arch-aws-backup-64.svg',
+  BackupPlan: 'arch-aws-backup-64.svg',
+  BackupVault: 'arch-aws-backup-64.svg',
   Cost: 'arch-aws-cost-explorer-64.svg',
   // SOW Appendix A additional services
   Neptune: 'arch-amazon-neptune-64.svg',
@@ -78,12 +84,16 @@ const GENERIC_ICON = 'arch-aws-cloud-map-64.svg';
 
 /**
  * Get the icon path for a resource type, theme-aware.
+ * Icons live under /aws-icons/<theme>/services/ or /aws-icons/<theme>/resources/...
  * Returns a path that always resolves — unknown types get the generic icon.
  */
 export function getServiceIconPath(type: string, isDark: boolean): string {
   const theme = isDark ? 'dark' : 'light';
   const file = ICON_FILES[type] || GENERIC_ICON;
-  return `/aws-icons/${theme}/${file}`;
+  if (file.startsWith('resources/') || file.startsWith('groups/')) {
+    return `/aws-icons/${theme}/${file}`;
+  }
+  return `/aws-icons/${theme}/services/${file}`;
 }
 
 /**
@@ -91,4 +101,42 @@ export function getServiceIconPath(type: string, isDark: boolean): string {
  */
 export function hasSpecificIcon(type: string): boolean {
   return type in ICON_FILES;
+}
+
+/**
+ * Boundary/group icons used to draw the architecture diagram containers
+ * (AWS Cloud, Region, VPC, public/private Subnet). These come from the
+ * icon pack's /aws-icons/<theme>/groups/ folder.
+ */
+const GROUP_ICON_FILES: Record<string, string> = {
+  AWSCloud: 'groups/aws-cloud-32.svg',
+  Account: 'groups/aws-account-32.svg',
+  Region: 'groups/region-32.svg',
+  VPC: 'groups/virtual-private-cloud-vpc-32.svg',
+  AvailabilityZone: 'groups/placeholder-blue-32.svg',
+  PublicSubnet: 'groups/public-subnet-32.svg',
+  PrivateSubnet: 'groups/private-subnet-32.svg',
+  DatabaseSubnet: 'groups/placeholder-purple-32.svg',
+  SecurityGroup: 'groups/placeholder-red-32.svg',
+  AutoScalingGroup: 'groups/auto-scaling-group-32.svg',
+  DataCenter: 'groups/corporate-data-center-32.svg',
+  TierIngress: 'categories/application-integration-64.svg',
+  TierCompute: 'categories/compute-64.svg',
+  TierDatabase: 'categories/database-64.svg',
+  TierMessaging: 'categories/application-integration-64.svg',
+};
+
+/**
+ * Get the icon path for a diagram boundary/group container, theme-aware.
+ * Returns an empty string when there is no group icon for the key (callers
+ * should treat that as "draw the boundary without an icon").
+ */
+export function getGroupIconPath(groupKey: string, isDark: boolean): string {
+  const theme = isDark ? 'dark' : 'light';
+  const file = GROUP_ICON_FILES[groupKey];
+  if (!file) return '';
+  if (file.startsWith('groups/') || file.startsWith('categories/')) {
+    return `/aws-icons/${theme}/${file}`;
+  }
+  return `/aws-icons/${theme}/groups/${file}`;
 }
