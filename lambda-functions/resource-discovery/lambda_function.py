@@ -22,7 +22,7 @@ s3_client = boto3.client('s3')
 dynamodb = boto3.resource('dynamodb')
 
 # Configuration from environment variables
-DATA_BUCKET = os.environ.get('DATA_BUCKET', 'archlens-data-515554959344')
+DATA_BUCKET = os.environ.get('DATA_BUCKET', 'archlens-data')
 SCANS_TABLE = os.environ.get('SCANS_TABLE', 'archlens-scans')
 SCAN_TIMEOUT_SECONDS = int(os.environ.get('SCAN_TIMEOUT_SECONDS', '3600'))
 
@@ -2519,11 +2519,17 @@ def lambda_handler(event, context):
         if error_code == 'AccessDenied' and 'AssumeRole' in error_msg:
             role_arn = body.get('roleArn', '') if isinstance(body, dict) else ''
             ext_id = body.get('externalId') if isinstance(body, dict) else None
+            caller_acct = ''
+            try:
+                caller_acct = sts_client.get_caller_identity().get('Account', '')
+            except Exception:
+                pass
+            acct_info = f" (AWS Account {caller_acct})" if caller_acct else ""
+            role_hint = f"'arn:aws:iam::{caller_acct}:role/archlens-lambda-execution-role'" if caller_acct else "ArchLens Lambda execution role"
             diagnostic = (
-                f"Cross-Account Trust Authorization Failed: ArchLens (AWS Account 515554959344) is not authorized "
+                f"Cross-Account Trust Authorization Failed: ArchLens{acct_info} is not authorized "
                 f"to assume role '{role_arn}'. Please ensure the target AWS account has added ArchLens "
-                f"('arn:aws:iam::515554959344:role/archlens-lambda-execution-role' or 'arn:aws:iam::515554959344:root') "
-                f"to the role's Trust Relationship policy"
+                f"({role_hint}) to the role's Trust Relationship policy"
             )
             if ext_id:
                 diagnostic += f" with ExternalId '{ext_id}'."

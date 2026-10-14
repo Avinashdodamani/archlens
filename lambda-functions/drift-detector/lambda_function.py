@@ -23,7 +23,7 @@ s3_client = boto3.client('s3')
 dynamodb = boto3.resource('dynamodb')
 sns_client = boto3.client('sns')
 
-DATA_BUCKET = os.environ.get('DATA_BUCKET', 'archlens-data-515554959344')
+DATA_BUCKET = os.environ.get('DATA_BUCKET', 'archlens-data')
 SCANS_TABLE = os.environ.get('SCANS_TABLE', 'archlens-scans')
 SNS_TOPIC_ARN = os.environ.get('SNS_TOPIC_ARN', '')
 

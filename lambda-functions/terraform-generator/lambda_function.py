@@ -20,8 +20,8 @@ s3_client = boto3.client('s3')
 dynamodb = boto3.resource('dynamodb')
 
 # Configuration from environment variables
-DATA_BUCKET = os.environ.get('DATA_BUCKET', 'archlens-data-515554959344')
-MODEL_ID = os.environ['MODEL_ID']  # e.g. apac.anthropic.claude-3-5-sonnet-20241022-v2:0
+DATA_BUCKET = os.environ.get('DATA_BUCKET', 'archlens-data')
+MODEL_ID = os.environ.get('MODEL_ID', 'apac.anthropic.claude-3-5-sonnet-20241022-v2:0')
 BEDROCK_REGION = os.environ.get('BEDROCK_REGION', 'ap-south-1')
 AUDIT_TABLE = os.environ.get('AUDIT_TABLE', 'archlens-audit')
 
@@ -62,7 +62,7 @@ Required files:
 
 ### Provider & Backend Configuration:
 - Use terraform block with required_providers (hashicorp/aws with version constraint ~> 5.0)
-- Configure S3 backend for state storage (bucket: archlens-data-515554959344, key: terraform/{scan_id}/terraform.tfstate)
+- Configure S3 backend for state storage (bucket: archlens-data, key: terraform/{scan_id}/terraform.tfstate)
 - Set provider region using variable
 - Enable default_tags in the provider block
 

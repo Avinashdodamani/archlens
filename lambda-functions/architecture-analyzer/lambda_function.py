@@ -22,9 +22,9 @@ s3_client = boto3.client('s3')
 dynamodb = boto3.resource('dynamodb')
 
 # Configuration from environment variables
-DATA_BUCKET = os.environ.get('DATA_BUCKET', 'archlens-data-515554959344')
+DATA_BUCKET = os.environ.get('DATA_BUCKET', 'archlens-data')
 RECOMMENDATIONS_TABLE = os.environ.get('RECOMMENDATIONS_TABLE', 'archlens-recommendations')
-MODEL_ID = os.environ['MODEL_ID']  # e.g. apac.anthropic.claude-3-5-sonnet-20241022-v2:0
+MODEL_ID = os.environ.get('MODEL_ID', 'apac.anthropic.claude-3-5-sonnet-20241022-v2:0')
 BEDROCK_REGION = os.environ.get('BEDROCK_REGION', 'ap-south-1')
 
 # Bedrock Guardrails (SOW Section 7) — applied when configured via env vars

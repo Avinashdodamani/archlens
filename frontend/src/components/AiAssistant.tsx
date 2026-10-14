@@ -44,7 +44,7 @@ export default function AiAssistant() {
   const [messages, setMessages] = useState<Msg[]>([
     {
       role: 'assistant',
-      text: "👋 **Hello! I'm your ArchLens AI Solutions Architect**, powered live by **Amazon Bedrock (Nova Pro)**.\n\nAsk me anything about your discovered architecture, security hardening, cost optimizations, or Well-Architected Framework guidelines across any section of the platform.",
+      text: "👋 **Hello! I'm your ArchLens AI Solutions Architect**, powered live by **Amazon Bedrock**.\n\nAsk me anything about your discovered architecture, security hardening, cost optimizations, or Well-Architected Framework guidelines across any section of the platform.",
       timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
     },
   ]);
@@ -247,7 +247,7 @@ export default function AiAssistant() {
                 <p className="text-sm font-bold text-white flex items-center gap-1.5">
                   ArchLens AI
                   <span className="px-1.5 py-0.5 rounded text-[9px] font-semibold bg-purple-500/20 text-purple-300 border border-purple-500/30 flex items-center gap-0.5">
-                    <CpuChipIcon className="w-2.5 h-2.5" /> Bedrock Nova Pro
+                    <CpuChipIcon className="w-2.5 h-2.5" /> Amazon Bedrock
                   </span>
                 </p>
                 <p className="text-[10px] text-gray-400">

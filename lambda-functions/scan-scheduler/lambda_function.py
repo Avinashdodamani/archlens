@@ -41,7 +41,7 @@ DRIFT_FUNCTION = os.environ.get('DRIFT_FUNCTION', 'archlens-drift-detector')
 SELF_FUNCTION_ARN = os.environ.get('SELF_FUNCTION_ARN', '')
 SCHEDULER_ROLE_ARN = os.environ.get('SCHEDULER_ROLE_ARN', '')
 SCHEDULE_GROUP = os.environ.get('SCHEDULE_GROUP', 'default')
-SNS_TOPIC_ARN = os.environ.get('SNS_TOPIC_ARN', 'arn:aws:sns:ap-south-1:515554959344:archlens-notifications')
+SNS_TOPIC_ARN = os.environ.get('SNS_TOPIC_ARN', '')
 
 WEEKDAY_CRON = {
     'sunday': 1, 'monday': 2, 'tuesday': 3, 'wednesday': 4,
@@ -488,10 +488,9 @@ def run_schedule(body):
             f"• Top Resource Distribution :\n{breakdown_lines}\n\n"
             f"INFRASTRUCTURE DRIFT STATUS:\n"
             f"{drift_lines}\n\n"
-            f"-----------------------------------------------------------\n"
             f"Sign in to the ArchLens Console to explore architecture topology,\n"
             f"compliance benchmarks, and Well-Architected Framework recommendations:\n"
-            f"https://d2gsocwzfyrda.cloudfront.net\n"
+            f"{cf_url_line}"
         )
 
         if SNS_TOPIC_ARN:
@@ -509,6 +508,8 @@ def run_schedule(body):
         # Failure email alert
         subject = f"🚨 [ArchLens Alert] Scheduled Scan Failed - Account {account_id}"
         regs_str = ', '.join(regions) if isinstance(regions, list) else str(regions)
+        cf_domain = os.environ.get('CLOUDFRONT_DOMAIN', '')
+        cf_url_line = f"https://{cf_domain}\n" if cf_domain else "ArchLens Management Console\n"
         email_body = (
             f"ArchLens Scheduled Scan Failure Alert\n"
             f"===========================================================\n"
@@ -521,12 +522,11 @@ def run_schedule(body):
             f"{error_msg or 'Unknown execution error'}\n\n"
             f"TROUBLESHOOTING STEPS:\n"
             f"1. Verify that the IAM Role ({role_arn}) exists in target account {account_id}.\n"
-            f"2. Ensure the IAM Role trust policy allows ArchLens Lambda Execution Role "
-            f"('arn:aws:iam::515554959344:role/archlens-lambda-execution-role').\n"
+            f"2. Ensure the IAM Role trust policy allows ArchLens Lambda Execution Role.\n"
             f"3. Verify that the role has required ReadOnly permissions.\n\n"
             f"-----------------------------------------------------------\n"
             f"Access ArchLens Management Console:\n"
-            f"https://d2gsocwzfyrda.cloudfront.net\n"
+            f"{cf_url_line}"
         )
 
         if SNS_TOPIC_ARN:

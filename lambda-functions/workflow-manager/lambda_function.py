@@ -29,8 +29,8 @@ logger.setLevel(logging.INFO)
 sfn = boto3.client('stepfunctions')
 sqs = boto3.client('sqs')
 
-STATE_MACHINE_ARN = os.environ['STATE_MACHINE_ARN']
-APPROVAL_QUEUE_URL = os.environ['APPROVAL_QUEUE_URL']
+STATE_MACHINE_ARN = os.environ.get('STATE_MACHINE_ARN') or os.environ.get('WORKFLOW_ARN', '')
+APPROVAL_QUEUE_URL = os.environ.get('APPROVAL_QUEUE_URL') or os.environ.get('SQS_QUEUE_URL', '')
 
 CORS_HEADERS = {
     'Content-Type': 'application/json',

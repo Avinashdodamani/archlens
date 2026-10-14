@@ -380,7 +380,7 @@ export const useAppStore = create<AppState>()(
 
             // Ensure connected accounts and roleArn are populated
             const currentConnected = get().connectedAccounts;
-            const primaryAccountId = mapped[0]?.accountId || get().accountId || '515554959344';
+            const primaryAccountId = mapped[0]?.accountId || get().accountId || '338920687491';
             const defaultRole = `arn:aws:iam::${primaryAccountId}:role/archlens-client-readonly-role`;
 
             let updatedAccounts = currentConnected.map(acc => ({

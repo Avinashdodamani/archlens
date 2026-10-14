@@ -23,7 +23,7 @@ logger.setLevel(logging.INFO)
 s3_client = boto3.client('s3')
 dynamodb = boto3.resource('dynamodb')
 
-DATA_BUCKET = os.environ.get('DATA_BUCKET', 'archlens-data-515554959344')
+DATA_BUCKET = os.environ.get('DATA_BUCKET', 'archlens-data')
 SCANS_TABLE = os.environ.get('SCANS_TABLE', 'archlens-scans')
 RECOMMENDATIONS_TABLE = os.environ.get('RECOMMENDATIONS_TABLE', 'archlens-recommendations')
 

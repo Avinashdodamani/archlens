@@ -24,7 +24,17 @@ export default function LoginPage() {
     e.preventDefault();
     setLoading(true);
     try {
-      const result = await signIn({ username: email, password });
+      let result;
+      try {
+        result = await signIn({
+          username: email,
+          password,
+          options: { authFlowType: 'USER_PASSWORD_AUTH' },
+        });
+      } catch (err: unknown) {
+        // Fallback to default SRP auth if USER_PASSWORD_AUTH is not permitted
+        result = await signIn({ username: email, password });
+      }
       if (result.isSignedIn) {
         let displayName = email.split('@')[0];
         try {

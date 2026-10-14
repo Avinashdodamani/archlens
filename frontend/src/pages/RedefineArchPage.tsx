@@ -208,7 +208,7 @@ export default function RedefineArchPage() {
             <h1 className="text-2xl font-bold text-white tracking-tight">RedefineYourArch</h1>
             <span className="px-2.5 py-0.5 rounded-full text-[10px] font-bold bg-purple-500/10 text-purple-300 border border-purple-500/30 flex items-center gap-1 shadow-sm">
               <CpuChipIcon className="w-3 h-3 text-purple-400" />
-              Bedrock Nova Pro
+              Amazon Bedrock
             </span>
             <span className="px-2.5 py-0.5 rounded-full text-[10px] font-semibold bg-emerald-500/10 text-emerald-300 border border-emerald-500/30 flex items-center gap-1 shadow-sm">
               <LockClosedIcon className="w-3 h-3 text-emerald-400" />

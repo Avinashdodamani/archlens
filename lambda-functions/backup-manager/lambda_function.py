@@ -21,8 +21,8 @@ s3_client = boto3.client('s3')
 dynamodb = boto3.resource('dynamodb')
 
 # Configuration from environment variables
-DATA_BUCKET = os.environ.get('DATA_BUCKET', 'archlens-data-515554959344')
-BACKUPS_BUCKET = os.environ.get('BACKUPS_BUCKET', 'archlens-backups-515554959344')
+DATA_BUCKET = os.environ.get('DATA_BUCKET', 'archlens-data')
+BACKUPS_BUCKET = os.environ.get('BACKUPS_BUCKET', 'archlens-backups')
 AUDIT_TABLE = os.environ.get('AUDIT_TABLE', 'archlens-audit')
 BACKUP_VAULT = os.environ.get('BACKUP_VAULT', 'archlens-pre-change-rule')
 SNS_TOPIC_ARN = os.environ.get('SNS_TOPIC_ARN', '')

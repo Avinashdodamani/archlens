@@ -35,7 +35,7 @@ const TRUST_POLICY_JSON = `{
     {
       "Effect": "Allow",
       "Principal": {
-        "AWS": "arn:aws:iam::515554959344:role/archlens-lambda-execution-role"
+        "AWS": "arn:aws:iam::338920687491:role/archlens-lambda-execution-role"
       },
       "Action": "sts:AssumeRole"
     }
@@ -48,7 +48,7 @@ Description: 'ArchLens - Read-Only Cross-Account Role for Architecture Discovery
 Parameters:
   ArchLensAccountId:
     Type: String
-    Default: '515554959344'
+    Default: '338920687491'
     Description: 'AWS Account ID of the ArchLens platform'
 
   ExternalId:
@@ -89,7 +89,7 @@ Outputs:
 const TERRAFORM_TEMPLATE = `# ArchLens - Read-Only Cross-Account Role for Architecture Discovery
 variable "archlens_account_id" {
   type        = string
-  default     = "515554959344"
+  default     = "338920687491"
   description = "AWS Account ID of the ArchLens platform"
 }
 
@@ -729,7 +729,7 @@ export default function YourArchPage() {
                 <div className="flex items-center gap-2">
                   <span className="text-xs font-semibold uppercase tracking-wider text-gray-400">Connected AWS Account:</span>
                   <span className="text-sm font-mono font-bold text-white">
-                    {scanResult?.accountId || effectiveAccounts[0]?.accountId || '515554959344'}
+                    {scanResult?.accountId || effectiveAccounts[0]?.accountId || '338920687491'}
                   </span>
                   <span className="text-[10px] font-bold uppercase tracking-wider bg-emerald-500/20 text-emerald-400 border border-emerald-500/30 px-2 py-0.5 rounded-full">
                     Active
@@ -743,7 +743,7 @@ export default function YourArchPage() {
             <div className="flex items-center gap-2 self-start sm:self-center">
               <span className="text-xs text-gray-400">Active IAM Role:</span>
               <code className="text-xs text-primary-300 bg-dark-900/90 px-2.5 py-1 rounded-md border border-dark-700 font-mono" title={roleArn || effectiveAccounts[0]?.roleArn}>
-                {((roleArn || effectiveAccounts[0]?.roleArn || `arn:aws:iam::${scanResult?.accountId || '515554959344'}:role/archlens-client-readonly-role`).split('/').pop())}
+                {((roleArn || effectiveAccounts[0]?.roleArn || `arn:aws:iam::${scanResult?.accountId || '338920687491'}:role/archlens-client-readonly-role`).split('/').pop())}
               </code>
             </div>
           </div>
@@ -1008,7 +1008,7 @@ export default function YourArchPage() {
                   {scanError.includes('sts:AssumeRole') ? (
                     <>
                       The target client IAM role does not trust ArchLens yet. In AWS IAM cross-account access, the client role must add ArchLens account{' '}
-                      <code className="px-1.5 py-0.5 bg-dark-900 rounded text-primary-300 font-mono text-xs">515554959344</code>{' '}
+                      <code className="px-1.5 py-0.5 bg-dark-900 rounded text-primary-300 font-mono text-xs">338920687491</code>{' '}
                       to its <strong>Trust Relationship (AssumeRolePolicyDocument)</strong>.
                     </>
                   ) : (
@@ -1341,7 +1341,7 @@ export default function YourArchPage() {
                     <ol className="list-decimal list-inside space-y-1 text-gray-300">
                       <li>Sign in to the AWS IAM Console in your client account.</li>
                       <li>Navigate to <strong>Roles</strong> &rarr; Click <strong>Create role</strong>.</li>
-                      <li>Select <strong>AWS account</strong> &rarr; Choose <strong>Another AWS account</strong> &rarr; Enter Account ID: <code className="px-1.5 py-0.5 bg-dark-950 rounded text-primary-300 font-mono">515554959344</code>.</li>
+                      <li>Select <strong>AWS account</strong> &rarr; Choose <strong>Another AWS account</strong> &rarr; Enter Account ID: <code className="px-1.5 py-0.5 bg-dark-950 rounded text-primary-300 font-mono">338920687491</code>.</li>
                       <li>(Optional) If you want confused-deputy protection, check <strong>Require external ID</strong> and enter your secret External ID.</li>
                       <li>In permissions, attach AWS managed policies: <code className="font-mono text-purple-300">SecurityAudit</code> and <code className="font-mono text-purple-300">ReadOnlyAccess</code>.</li>
                       <li>Name the role <code className="font-mono text-green-300">ArchLens-Client-Scan-Role</code> and click <strong>Create role</strong>.</li>

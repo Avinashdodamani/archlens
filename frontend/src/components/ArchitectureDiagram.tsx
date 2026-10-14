@@ -1208,7 +1208,7 @@ async function buildAndLayout(
 
   const groupStyles = getGroupStyles(isDark);
   const accountRes = resources.find((r) => r.account_id || r.account);
-  const accountId = (accountRes?.account_id || accountRes?.account || '515554959344') as string;
+  const accountId = (accountRes?.account_id || accountRes?.account || '338920687491') as string;
   const cloudLabel = `AWS Cloud · Account: ${accountId}`;
 
   // AWS Cloud container wraps every region + global row.

@@ -1,0 +1,515 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>ArchLens - Solution Architecture & Workflow Guide</title>
+  <!-- Mermaid.js for interactive diagrams -->
+  <script src="https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js"></script>
+  <style>
+    :root {
+      --primary: #2563eb;
+      --primary-dark: #1d4ed8;
+      --secondary: #7c3aed;
+      --accent: #059669;
+      --dark-bg: #0f172a;
+      --card-bg: #ffffff;
+      --text-main: #1e293b;
+      --text-muted: #64748b;
+      --border: #e2e8f0;
+      --highlight: #f8fafc;
+    }
+
+    * {
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    }
+
+    body {
+      background: #f1f5f9;
+      color: var(--text-main);
+      line-height: 1.6;
+      padding: 0;
+    }
+
+    header {
+      background: linear-gradient(135deg, #1e293b 0%, #0f172a 100%);
+      color: white;
+      padding: 40px 20px;
+      text-align: center;
+      border-bottom: 4px solid var(--primary);
+    }
+
+    header h1 {
+      font-size: 2.5rem;
+      letter-spacing: -0.5px;
+      margin-bottom: 10px;
+    }
+
+    header h1 span {
+      color: #38bdf8;
+    }
+
+    header p {
+      font-size: 1.15rem;
+      color: #94a3b8;
+      max-width: 800px;
+      margin: 0 auto;
+    }
+
+    .badge-bar {
+      margin-top: 15px;
+      display: flex;
+      justify-content: center;
+      gap: 12px;
+      flex-wrap: wrap;
+    }
+
+    .badge {
+      background: rgba(255, 255, 255, 0.1);
+      border: 1px solid rgba(255, 255, 255, 0.2);
+      padding: 5px 14px;
+      border-radius: 20px;
+      font-size: 0.85rem;
+      color: #e2e8f0;
+    }
+
+    .container {
+      max-width: 1200px;
+      margin: 30px auto;
+      padding: 0 20px;
+    }
+
+    .card {
+      background: var(--card-bg);
+      border-radius: 12px;
+      border: 1px solid var(--border);
+      box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.05), 0 2px 4px -2px rgba(0, 0, 0, 0.05);
+      margin-bottom: 30px;
+      overflow: hidden;
+    }
+
+    .card-header {
+      padding: 20px 24px;
+      border-bottom: 1px solid var(--border);
+      background: var(--highlight);
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+    }
+
+    .card-header h2 {
+      font-size: 1.4rem;
+      color: #0f172a;
+      display: flex;
+      align-items: center;
+      gap: 10px;
+    }
+
+    .card-body {
+      padding: 24px;
+    }
+
+    /* Tables */
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      margin: 15px 0;
+      font-size: 0.95rem;
+    }
+
+    th, td {
+      padding: 14px 16px;
+      text-align: left;
+      border-bottom: 1px solid var(--border);
+      vertical-align: top;
+    }
+
+    th {
+      background: #f8fafc;
+      color: #334155;
+      font-weight: 600;
+      text-transform: uppercase;
+      font-size: 0.8rem;
+      letter-spacing: 0.5px;
+    }
+
+    tr:hover {
+      background: #f8fafc;
+    }
+
+    .tier-badge {
+      display: inline-block;
+      padding: 4px 10px;
+      border-radius: 6px;
+      font-size: 0.8rem;
+      font-weight: 600;
+      margin-bottom: 6px;
+    }
+
+    .tier-1 { background: #dbeafe; color: #1e40af; }
+    .tier-2 { background: #fef3c7; color: #92400e; }
+    .tier-3 { background: #d1fae5; color: #065f46; }
+
+    /* Mermaid diagrams container */
+    .mermaid-box {
+      background: #ffffff;
+      border: 1px solid #e2e8f0;
+      border-radius: 8px;
+      padding: 20px;
+      text-align: center;
+      overflow-x: auto;
+    }
+
+    /* Highlights / Callouts */
+    .callout {
+      border-left: 4px solid var(--primary);
+      background: #eff6ff;
+      padding: 16px 20px;
+      border-radius: 0 8px 8px 0;
+      margin: 15px 0;
+      color: #1e3a8a;
+      font-size: 0.95rem;
+    }
+
+    .callout.green {
+      border-left-color: var(--accent);
+      background: #ecfdf5;
+      color: #064e3b;
+    }
+
+    .callout.purple {
+      border-left-color: var(--secondary);
+      background: #f5f3ff;
+      color: #4c1d95;
+    }
+
+    .grid-2 {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 20px;
+    }
+
+    @media (max-width: 868px) {
+      .grid-2 {
+        grid-template-columns: 1fr;
+      }
+    }
+
+    .key-point {
+      background: #f8fafc;
+      border: 1px solid #e2e8f0;
+      border-radius: 8px;
+      padding: 16px;
+    }
+
+    .key-point h4 {
+      margin-bottom: 8px;
+      color: var(--primary-dark);
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+
+    /* Print styling */
+    @media print {
+      body {
+        background: white;
+      }
+      .card {
+        box-shadow: none;
+        border: 1px solid #ccc;
+        page-break-inside: avoid;
+      }
+    }
+  </style>
+</head>
+<body>
+
+  <header>
+    <h1>Arch<span>Lens</span> Architecture & Demo Guide</h1>
+    <p>Complete Enterprise Workflow, 3-Tier Multi-Region Resource Discovery, and Grounded GenAI Chatbot Architecture</p>
+    <div class="badge-bar">
+      <span class="badge">AWS Well-Architected Framework</span>
+      <span class="badge">Amazon Bedrock Nova Pro</span>
+      <span class="badge">50+ Deep Scanners</span>
+      <span class="badge">Zero-Agent CloudFormation</span>
+    </div>
+  </header>
+
+  <div class="container">
+
+    <!-- SECTION 1: SERVICE DISCOVERY TABLE -->
+    <div class="card">
+      <div class="card-header">
+        <h2>🔍 1. Service Discovery & Analysis Matrix</h2>
+      </div>
+      <div class="card-body">
+        <p style="margin-bottom: 15px; color: var(--text-muted);">
+          ArchLens uses a robust 3-tier discovery pipeline ensuring 100% of the customer's active footprint is captured without running heavy agents inside customer machines.
+        </p>
+        <table>
+          <thead>
+            <tr>
+              <th style="width: 20%;">Discovery Tier</th>
+              <th style="width: 25%;">Services Analyzed</th>
+              <th style="width: 30%;">Inspection Depth & Checks</th>
+              <th style="width: 25%;">Discovery Mechanism</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td>
+                <span class="tier-badge tier-1">Tier 1: Dedicated Scanners</span>
+                <br><strong>50+ Core AWS Services</strong>
+              </td>
+              <td>
+                <strong>Compute</strong>: EC2, AutoScaling, Lambda, ECS, EKS<br>
+                <strong>Storage</strong>: S3, EBS, EFS, DynamoDB, RDS<br>
+                <strong>Network</strong>: VPC, Subnets, IGW, NAT, Route53, CloudFront, ALB/NLB, SGs<br>
+                <strong>Security</strong>: IAM, KMS, Secrets Manager, WAF, CloudTrail, GuardDuty, Macie, Inspector<br>
+                <strong>App Integration</strong>: SQS, SNS, EventBridge, API Gateway, Step Functions
+              </td>
+              <td>
+                Deep configuration inspection:
+                <ul style="padding-left: 18px; margin-top: 6px;">
+                  <li>Public IP & CIDR <code>0.0.0.0/0</code> exposure</li>
+                  <li>Multi-AZ redundancy & failover</li>
+                  <li>Encryption at rest (KMS) & in-transit (TLS)</li>
+                  <li>Overpermissive IAM policies / MFA missing</li>
+                  <li>Backup schedules & unattached orphan resources</li>
+                </ul>
+              </td>
+              <td>
+                <strong>Direct AWS SDK (Boto3)</strong> APIs.<br>
+                Runs concurrently across all enabled regions using <code>ThreadPoolExecutor</code> (12 parallel threads).
+              </td>
+            </tr>
+            <tr>
+              <td>
+                <span class="tier-badge tier-2">Tier 2: Catch-All Universal</span>
+                <br><strong>Tagged & Config-Tracked</strong>
+              </td>
+              <td>
+                OpenSearch, SageMaker, Redshift, Glue, Athena, Kinesis, CodePipeline, CloudWatch Logs, AppSync, MSK, QuickSight, and all remaining AWS services.
+              </td>
+              <td>
+                Extracts complete resource ARNs, tags, region, compliance state, and configuration timeline without requiring custom hand-written scanner functions.
+              </td>
+              <td>
+                <strong>1. AWS Config Advanced Query</strong> (SQL-like <code>SelectResourceConfig</code> across 100+ resource types).<br>
+                <strong>2. Resource Groups Tagging API</strong> (<code>GetResources</code>).<br>
+                <em>Auto-deduplicated against Tier 1.</em>
+              </td>
+            </tr>
+            <tr>
+              <td>
+                <span class="tier-badge tier-3">Tier 3: Cost Footprint</span>
+                <br><strong>All 200+ AWS Services</strong>
+              </td>
+              <td>
+                Any AWS service currently generating billing, even if serverless, hidden, or untagged.
+              </td>
+              <td>
+                Cross-references active spending against discovered inventory. Ensures zero silent zombie spend or ghost resources exist unmonitored.
+              </td>
+              <td>
+                <strong>AWS Cost Explorer API</strong> (<code>GetCostAndUsage</code> for past 30 days grouped by service). Flags uncataloged active services.
+              </td>
+            </tr>
+          </tbody>
+        </table>
+
+        <!-- EXPLANATION: WHY 3 TIERS & WHY NOT JUST COST EXPLORER? -->
+        <div class="callout green" style="margin-top: 20px;">
+          <h3 style="margin-bottom: 8px; font-size: 1.1rem; color: #065f46;">💡 Quick Q&A: What is the difference between the 3 tiers, and why can't we just look at Cost Explorer directly?</h3>
+          <p style="margin-bottom: 8px;">
+            <strong>• What is the difference?</strong>
+            <br>— <strong>Tier 1 (Dedicated Scanners)</strong> examines the <em>deep technical security settings</em> (Is port 22 open? Is KMS encryption on? Is Multi-AZ enabled?).
+            <br>— <strong>Tier 2 (AWS Config & Tags)</strong> identifies the <em>existence and inventory</em> of the remaining 50+ services (e.g., OpenSearch domains, SageMaker endpoints) that don't need custom scanners.
+            <br>— <strong>Tier 3 (Cost Explorer)</strong> identifies the <em>dollar footprint</em> across all 200+ AWS services.
+          </p>
+          <p>
+            <strong>• Can we see directly Cost Explorer instead of AWS Config?</strong>
+            <br><strong>Short Answer: No, because Cost Explorer only tells you <em>money spent</em>, not <em>how things are configured</em>.</strong>
+            <br>1. <strong>Cost Explorer has zero security details:</strong> It tells you you spent $50 on S3, but cannot tell you if an S3 bucket is public, unencrypted, or missing MFA delete.
+            <br>2. <strong>Cost Explorer has a 24-hour billing delay:</strong> If someone created an insecure database 2 hours ago, Cost Explorer won't show it yet, but AWS Config and direct scanners detect it instantly.
+            <br>3. <strong>Free-tier & zero-cost resources are invisible in billing:</strong> An open security group (`0.0.0.0/0`), an unattached internet gateway, or free IAM users with admin access cost $0.00, so Cost Explorer will completely miss them!
+            <br><em>Summary:</em> <strong>AWS Config & Direct Scanners give Security & Architecture</strong>; <strong>Cost Explorer gives Financial Health & catches forgotten services</strong>. They work together.
+          </p>
+        </div>
+      </div>
+    </div>
+
+    <!-- SECTION 2: END-TO-END WORKFLOW DIAGRAM -->
+    <div class="card">
+      <div class="card-header">
+        <h2>⚡ 2. Complete End-to-End Application Workflow</h2>
+      </div>
+      <div class="card-body">
+        <div class="callout">
+          <strong>Workflow Summary:</strong> Client Account Onboarding ➔ Region Probing & Concurrency ➔ Multi-Tier Inventory Normalization ➔ Bedrock Nova Evaluation ➔ Interactive Dashboard & Exportable Remediation.
+        </div>
+        <div class="mermaid-box">
+          <pre class="mermaid">
+flowchart TD
+    subgraph S1["1. Onboarding & Target Auth"]
+        User["User / Solution Architect"]
+        CFN["CloudFormation Template<br/>(ArchLensCrossAccountRole)"]
+        STS["AWS STS AssumeRole<br/>(Target Account ID + ExternalID)"]
+        User --> CFN --> STS
+    end
+
+    subgraph S2["2. Multi-Region Discovery Engine"]
+        RegScan["Region Probe (ec2:DescribeRegions)"]
+        ThreadPool["ThreadPoolExecutor (12 Parallel Workers)"]
+        T1["Tier 1: 50+ Dedicated Scanners<br/>(EC2, S3, RDS, IAM, VPC, EKS)"]
+        T2["Tier 2: AWS Config + Tagging API<br/>(Universal Catch-All)"]
+        T3["Tier 3: Cost Explorer Footprint<br/>(30-Day Active Billing Scan)"]
+        Dedup["De-duplication & Normalization Engine"]
+        
+        STS --> RegScan --> ThreadPool
+        ThreadPool --> T1 & T2 & T3
+        T1 & T2 & T3 --> Dedup
+    end
+
+    subgraph S3["3. Bedrock Nova AI Evaluation"]
+        Bedrock["Amazon Bedrock (Nova Pro Engine)"]
+        Guard["Bedrock Guardrail (Strict Governance)"]
+        WAF["Well-Architected 5-Pillar Scoring<br/>(Security, Cost, Reliability, Perf, Ops)"]
+        
+        Dedup --> Bedrock
+        Guard -.-> Bedrock
+        Bedrock --> WAF
+    end
+
+    subgraph S4["4. Interactive Visual Dashboard & Chatbot"]
+        UI["ArchLens Web Console"]
+        Pillars["5-Pillar Score Cards"]
+        Chat["Grounded GenAI Chatbot"]
+        Graph["Interactive Cloud Topology Map"]
+        
+        WAF --> UI
+        UI --> Pillars & Chat & Graph
+    end
+
+    subgraph S5["5. Automated Remediation & Deliverables"]
+        Jira["Jira / Slack Webhook Alerts"]
+        Remed["One-Click SSM & CLI Fixes"]
+        PDF["Executive Architecture PDF Audit"]
+        
+        UI --> Jira & Remed & PDF
+    end
+
+    classDef primary fill:#2563EB,stroke:#1D4ED8,color:#fff
+    classDef success fill:#059669,stroke:#047857,color:#fff
+    classDef ai fill:#7C3AED,stroke:#6D28D9,color:#fff
+    class S1 primary
+    class S2 success
+    class S3 ai
+          </pre>
+        </div>
+      </div>
+    </div>
+
+    <!-- SECTION 3: AI CHATBOT ARCHITECTURE -->
+    <div class="card">
+      <div class="card-header">
+        <h2>🤖 3. Real-Time AI Chatbot Grounding Architecture</h2>
+      </div>
+      <div class="card-body">
+        
+        <!-- GENERAL NOTE -->
+        <div class="callout" style="border-left-color: #3b82f6; background: #eff6ff; color: #1e3a8a; margin-bottom: 15px;">
+          <strong>📌 General Note on GenAI in Cloud Governance:</strong>
+          <br>Generic AI models (like ChatGPT or standalone LLMs) hallucinate because they have no access to your live infrastructure. They provide textbook AWS best practices but cannot know your actual VPC IDs, open ports, or account vulnerabilities.
+        </div>
+
+        <!-- SPECIFIC NOTE FOR ARCHLENS -->
+        <div class="callout purple" style="margin-bottom: 15px;">
+          <strong>🎯 ArchLens Specific Architecture:</strong>
+          <br>ArchLens solves this through <strong>Strict In-Memory Grounding</strong>. Before sending a query to Amazon Bedrock Nova Pro, the backend automatically extracts the active scan from DynamoDB (e.g., Target Account ID <code>515554959344</code>, 59 live resources, specific security findings) and binds it into the prompt with an active Amazon Bedrock Guardrail (<code>303z1lw3qgz1</code>). The AI is forbidden from guessing or inventing resources.
+        </div>
+
+        <!-- REAL-TIME EXAMPLE -->
+        <div class="callout green" style="margin-bottom: 20px;">
+          <strong>💡 Real-Time Working Example:</strong>
+          <br><strong>User types in Chat:</strong> <em>"Which of my S3 buckets or databases are publicly exposed?"</em>
+          <br><strong>What happens in the background:</strong>
+          <ol style="margin-left: 20px; margin-top: 5px;">
+            <li>Lambda fetches the active scan for Account <code>515554959344</code>.</li>
+            <li>It injects into Bedrock: <code>"Context: Scan has 12 S3 buckets. Bucket 'finance-reports-prod' has BlockPublicAccess disabled and is publicly readable. RDS 'prod-postgres' is private."</code></li>
+            <li>Bedrock Nova Pro responds immediately with the exact resource: <code>"CRITICAL: S3 Bucket 'finance-reports-prod' in ap-south-1 is publicly exposed. Your RDS instances are safe. Run this CLI to fix it immediately: aws s3api put-public-access-block --bucket finance-reports-prod ..."</code></li>
+          </ol>
+        </div>
+
+        <div class="mermaid-box">
+          <pre class="mermaid">
+sequenceDiagram
+    autonumber
+    actor User as User / Reviewer
+    participant UI as ArchLens Chatbot UI
+    participant APIGW as API Gateway (/chat)
+    participant Lambda as Architecture-Analyzer Lambda
+    participant DDB as DynamoDB (Scan Registry)
+    participant Bedrock as Amazon Bedrock (Nova Pro)
+
+    User->>UI: "Which S3 buckets or databases are publicly exposed?"
+    UI->>APIGW: POST /chat {sessionId, targetAccountId, question}
+    APIGW->>Lambda: Invoke event
+    
+    Lambda->>DDB: Query active scan inventory (59 resources, findings, pillar scores)
+    DDB-->>Lambda: Return normalized live infrastructure state
+    
+    Note over Lambda: Injects Context Prompt:<br/>"Account: 515554959344 | Resources: 59 | WAF Score: 78% | Enforce Guardrail"
+    
+    Lambda->>Bedrock: InvokeModelWithResponseStream (apac.amazon.nova-pro-v1:0)
+    Bedrock-->>Lambda: Stream verified architectural assessment + exact AWS CLI fixes
+    Lambda-->>UI: Real-time response stream
+    UI-->>User: Displays exact resource IDs, severity rating, and 1-click remediation command
+          </pre>
+        </div>
+      </div>
+    </div>
+
+    <!-- SECTION 4: KEY ARCHITECTURAL BENEFITS -->
+    <div class="card">
+      <div class="card-header">
+        <h2>🚀 4. Key Architectural Benefits</h2>
+      </div>
+      <div class="card-body">
+        <div class="grid-2">
+          <div class="key-point">
+            <h4>🔐 Zero Agent Overhead</h4>
+            <p>Customers don't need to install software agents or open inbound firewall ports. A standard CloudFormation template deploys a read-only cross-account role with a cryptographically secure External ID.</p>
+          </div>
+          <div class="key-point">
+            <h4>⚡ High-Speed Concurrency</h4>
+            <p>Scanning all active AWS regions is executed concurrently with 12 parallel worker threads, completing enterprise discovery in seconds and avoiding API Gateway timeout limits.</p>
+          </div>
+          <div class="key-point">
+            <h4>🛡️ Grounded AI - Zero Hallucinations</h4>
+            <p>Bedrock Nova Pro is strictly constrained by Amazon Bedrock Guardrails and fed live DynamoDB scan data. If a resource doesn't exist in the scan, the AI won't invent it.</p>
+          </div>
+          <div class="key-point">
+            <h4>📋 Complete Actionability</h4>
+            <p>Generates instant executive audit reports, interactive blast-radius visual graphs, and copy-paste AWS CLI remediation scripts to fix vulnerabilities immediately.</p>
+          </div>
+        </div>
+      </div>
+    </div>
+
+  </div>
+
+  <script>
+    mermaid.initialize({
+      startOnLoad: true,
+      theme: 'default',
+      securityLevel: 'loose',
+      flowchart: { curve: 'basis' }
+    });
+  </script>
+</body>
+</html>
