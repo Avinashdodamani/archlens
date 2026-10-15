@@ -412,36 +412,64 @@ def invoke_bedrock(prompt):
 def parse_ai_response(ai_response):
     """
     Parse the AI response, extracting valid JSON.
-    Handles cases where the model wraps JSON in markdown or adds extra text.
+    Handles cases where the model wraps JSON in markdown fences (```json ... ```)
+    or where a response is slightly truncated at token limit.
     """
-    # Try direct parse first
+    if not ai_response or not isinstance(ai_response, str):
+        return {
+            'summary': 'Empty response received from Bedrock',
+            'raw_response': '',
+            'parse_error': True
+        }
+
+    text = ai_response.strip()
+
+    # 1. Strip markdown code fences if present (```json ... ```)
+    if text.startswith('```'):
+        lines = text.splitlines()
+        if lines and lines[0].strip().startswith('```'):
+            lines = lines[1:]
+        if lines and lines[-1].strip().startswith('```'):
+            lines = lines[:-1]
+        text = '\n'.join(lines).strip()
+
+    # 2. Try direct JSON parse
     try:
-        return json.loads(ai_response)
-    except json.JSONDecodeError:
+        parsed = json.loads(text)
+        if isinstance(parsed, dict):
+            return parsed
+    except Exception:
         pass
 
-    # Try to find JSON block in the response
-    # Look for the outermost { }
-    brace_count = 0
-    json_start = -1
-    json_end = -1
-
-    for i, char in enumerate(ai_response):
-        if char == '{':
-            if brace_count == 0:
-                json_start = i
-            brace_count += 1
-        elif char == '}':
-            brace_count -= 1
-            if brace_count == 0:
-                json_end = i + 1
-                break
-
-    if json_start >= 0 and json_end > json_start:
+    # 3. Find outermost { ... }
+    first_brace = text.find('{')
+    last_brace = text.rfind('}')
+    if first_brace != -1 and last_brace > first_brace:
+        candidate = text[first_brace:last_brace + 1]
         try:
-            return json.loads(ai_response[json_start:json_end])
-        except json.JSONDecodeError:
+            parsed = json.loads(candidate)
+            if isinstance(parsed, dict):
+                return parsed
+        except Exception:
             pass
+
+    # 4. If truncated by token limit, safely repair back to last valid comma or brace
+    if first_brace != -1:
+        truncated = text[first_brace:]
+        for i in range(len(truncated), 0, -1):
+            if truncated[i - 1] in ('}', ']', ','):
+                sub = truncated[:i].rstrip(',')
+                curlies = sub.count('{') - sub.count('}')
+                squares = sub.count('[') - sub.count(']')
+                if curlies >= 0 and squares >= 0:
+                    candidate = sub + (']' * squares) + ('}' * curlies)
+                    try:
+                        parsed = json.loads(candidate)
+                        if isinstance(parsed, dict) and (parsed.get('recommendations') or parsed.get('summary')):
+                            logger.info(f"Successfully repaired and parsed truncated JSON response ({len(parsed.get('recommendations', []))} recommendations recovered).")
+                            return parsed
+                    except Exception:
+                        continue
 
     # If all parsing fails, return structured error response
     logger.warning("Could not parse AI response as JSON, returning raw text")
