@@ -68,6 +68,7 @@
   html:not(.dark) .bg-dark-800,
   html:not(.dark) .bg-dark-950 {
     background-color: #ffffff;
+    color: #111827;
   }
 
   html:not(.dark) .border-dark-700,
@@ -76,31 +77,40 @@
   }
 
   html:not(.dark) .text-white {
-    color: #111827;
+    color: #0f172a !important;
   }
 
   html:not(.dark) .text-gray-400 {
-    color: #4b5563;
+    color: #475569 !important;
   }
 
   html:not(.dark) .text-gray-300 {
-    color: #374151;
+    color: #334155 !important;
+  }
+
+  html:not(.dark) .text-gray-200 {
+    color: #1e293b !important;
   }
 
   html:not(.dark) .text-gray-500 {
-    color: #6b7280;
+    color: #64748b !important;
   }
 
-  html:not(.dark) .bg-dark-900\/70 {
-    background-color: #f9fafb;
+  html:not(.dark) .bg-dark-900\/70,
+  html:not(.dark) .bg-dark-900\/80,
+  html:not(.dark) .bg-dark-900\/90 {
+    background-color: #f8fafc;
   }
 
-  html:not(.dark) .bg-dark-800\/80 {
+  html:not(.dark) .bg-dark-800\/80,
+  html:not(.dark) .bg-dark-800\/90 {
     background-color: #ffffff;
   }
 
-  html:not(.dark) .border-dark-700\/50 {
-    border-color: #e5e7eb;
+  html:not(.dark) .border-dark-700\/50,
+  html:not(.dark) .border-dark-700\/60,
+  html:not(.dark) .border-dark-700\/80 {
+    border-color: #e2e8f0;
   }
 
   html:not(.dark) .bg-dark-800\/40 {

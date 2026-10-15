@@ -1,7 +1,7 @@
 import { useState, useRef, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useAppStore } from '../store/useAppStore';
-import { discoverResources, workflow } from '../services/api';
+import { discoverResources, workflow, getScanStatus, getScan } from '../services/api';
 import { AWS_REGIONS, ALL_REGIONS_OPTION } from '../config/aws-regions';
 import { RESOURCE_TYPE_COLORS } from '../config/constants';
 import { getServiceIconPath } from '../config/aws-icon-map';
@@ -441,7 +441,44 @@ export default function YourArchPage() {
         setCurrentStep('idle');
       } else {
         const data = response.data as any;
-        finalizeDiscovery(data);
+        // If the scan was handed off asynchronously (e.g. multi-region or large estate)
+        if (data.status === 'in_progress' && data.scanId) {
+          const scanId = data.scanId;
+          const accountId = data.accountId;
+          // Minimal checks with backoff: check after 6s, 12s, 20s, 30s, 42s (total 5 checks max)
+          const delays = [6000, 6000, 8000, 10000, 12000];
+          let done = false;
+          for (const d of delays) {
+            await new Promise((resolve) => setTimeout(resolve, d));
+            const statusRes = await getScanStatus(scanId, accountId);
+            if (statusRes.data?.status === 'completed') {
+              const fullScan = await getScan(scanId);
+              if (fullScan.data && !fullScan.error) {
+                finalizeDiscovery(fullScan.data);
+                done = true;
+                break;
+              }
+            } else if (statusRes.data?.status === 'failed') {
+              setScanError(statusRes.data?.error || 'Multi-region discovery encountered an error.');
+              toast.error('Architecture discovery failed.');
+              setCurrentStep('idle');
+              done = true;
+              break;
+            }
+          }
+          if (!done) {
+            // Check one last time or load completed scans
+            const finalCheck = await getScan(scanId);
+            if (finalCheck.data && !finalCheck.error) {
+              finalizeDiscovery(finalCheck.data);
+            } else {
+              setScanError('Discovery is still processing in the background. Please refresh in a moment.');
+              setCurrentStep('idle');
+            }
+          }
+        } else {
+          finalizeDiscovery(data);
+        }
       }
     } catch (error) {
       // Capture the real error message for troubleshooting.
@@ -729,7 +766,7 @@ export default function YourArchPage() {
                 <div className="flex items-center gap-2">
                   <span className="text-xs font-semibold uppercase tracking-wider text-gray-400">Connected AWS Account:</span>
                   <span className="text-sm font-mono font-bold text-white">
-                    {scanResult?.accountId || effectiveAccounts[0]?.accountId || '338920687491'}
+                    {scanResult?.accountId || effectiveAccounts[0]?.accountId || 'Not Connected'}
                   </span>
                   <span className="text-[10px] font-bold uppercase tracking-wider bg-emerald-500/20 text-emerald-400 border border-emerald-500/30 px-2 py-0.5 rounded-full">
                     Active
@@ -743,7 +780,7 @@ export default function YourArchPage() {
             <div className="flex items-center gap-2 self-start sm:self-center">
               <span className="text-xs text-gray-400">Active IAM Role:</span>
               <code className="text-xs text-primary-300 bg-dark-900/90 px-2.5 py-1 rounded-md border border-dark-700 font-mono" title={roleArn || effectiveAccounts[0]?.roleArn}>
-                {((roleArn || effectiveAccounts[0]?.roleArn || `arn:aws:iam::${scanResult?.accountId || '338920687491'}:role/archlens-client-readonly-role`).split('/').pop())}
+                {((roleArn || effectiveAccounts[0]?.roleArn || (scanResult?.accountId ? `arn:aws:iam::${scanResult.accountId}:role/archlens-client-readonly-role` : 'None')).split('/').pop())}
               </code>
             </div>
           </div>
@@ -1007,37 +1044,28 @@ export default function YourArchPage() {
                 <p className="text-sm text-gray-300 mt-1">
                   {scanError.includes('sts:AssumeRole') ? (
                     <>
-                      The target client IAM role does not trust ArchLens yet. In AWS IAM cross-account access, the client role must add ArchLens account{' '}
+                      Cross-Account Access Denied: The target role must add ArchLens account{' '}
                       <code className="px-1.5 py-0.5 bg-dark-900 rounded text-primary-300 font-mono text-xs">338920687491</code>{' '}
-                      to its <strong>Trust Relationship (AssumeRolePolicyDocument)</strong>.
+                      to its <strong>Trust Relationship</strong>.
                     </>
                   ) : (
-                    'We could not complete the architecture discovery. Please review the details below and try again.'
+                    scanError
                   )}
                 </p>
                 <div className="mt-3 flex flex-wrap items-center gap-3">
-                  <button
-                    onClick={() => setShowOnboardingModal(true)}
-                    className="btn-primary text-xs flex items-center gap-1.5 py-1.5 px-3"
-                  >
-                    <BookOpenIcon className="w-3.5 h-3.5" />
-                    Fix in 10 Seconds (Trust Policy &amp; CFT)
-                  </button>
-                  <button
-                    onClick={() => setShowErrorDetails((s) => !s)}
-                    className="text-xs text-gray-400 hover:text-gray-200 underline"
-                  >
-                    {showErrorDetails ? 'Hide technical error' : 'Show technical error'}
-                  </button>
-                  <button onClick={handleDiscover} className="text-xs text-primary-400 hover:text-primary-300 font-medium">
+                  {scanError.includes('sts:AssumeRole') && (
+                    <button
+                      onClick={() => setShowOnboardingModal(true)}
+                      className="btn-primary text-xs flex items-center gap-1.5 py-1.5 px-3"
+                    >
+                      <BookOpenIcon className="w-3.5 h-3.5" />
+                      View IAM Trust Setup Guide
+                    </button>
+                  )}
+                  <button onClick={handleDiscover} className="btn-secondary text-xs flex items-center gap-1 py-1 px-3">
                     Retry Scan
                   </button>
                 </div>
-                {showErrorDetails && (
-                  <pre className="mt-3 p-3 bg-dark-950 border border-dark-700 rounded-lg text-[11px] text-red-300 font-mono whitespace-pre-wrap break-words">
-                    {scanError}
-                  </pre>
-                )}
               </div>
             </div>
           </div>
@@ -1202,6 +1230,7 @@ export default function YourArchPage() {
                   relationships={scanResult.relationships}
                   servicesFootprint={scanResult.servicesFootprint}
                   viewMode={diagramViewMode}
+                  accountId={scanResult.accountId}
                 />
               </div>
             )}
@@ -1298,146 +1327,39 @@ export default function YourArchPage() {
               </button>
             </div>
 
-            {/* Modal Tabs */}
-            <div className="flex border-b border-dark-700 bg-dark-900/50 px-2 pt-2 gap-1">
-              <button
-                onClick={() => setOnboardingTab('trust')}
-                className={`px-4 py-2 text-xs font-semibold rounded-t-lg transition-colors border-b-2 ${
-                  onboardingTab === 'trust'
-                    ? 'border-primary-500 text-primary-400 bg-dark-800'
-                    : 'border-transparent text-gray-400 hover:text-gray-200'
-                }`}
-              >
-                1. Existing Role Trust Policy (10s Fix)
-              </button>
-              <button
-                onClick={() => setOnboardingTab('cft')}
-                className={`px-4 py-2 text-xs font-semibold rounded-t-lg transition-colors border-b-2 ${
-                  onboardingTab === 'cft'
-                    ? 'border-primary-500 text-primary-400 bg-dark-800'
-                    : 'border-transparent text-gray-400 hover:text-gray-200'
-                }`}
-              >
-                2. 1-Click CloudFormation Template
-              </button>
-              <button
-                onClick={() => setOnboardingTab('terraform')}
-                className={`px-4 py-2 text-xs font-semibold rounded-t-lg transition-colors border-b-2 ${
-                  onboardingTab === 'terraform'
-                    ? 'border-primary-500 text-primary-400 bg-dark-800'
-                    : 'border-transparent text-gray-400 hover:text-gray-200'
-                }`}
-              >
-                3. Terraform Code
-              </button>
-            </div>
-
             {/* Modal Content Body */}
             <div className="p-6 overflow-y-auto space-y-4 flex-1">
-              {onboardingTab === 'trust' && (
-                <div className="space-y-3">
-                  <div className="p-3.5 bg-blue-500/10 border border-blue-500/20 rounded-xl text-xs text-blue-300">
-                    <strong className="text-white block mb-1 text-sm">Option A: Create a New Read-Only IAM Role in AWS Console</strong>
-                    <ol className="list-decimal list-inside space-y-1 text-gray-300">
-                      <li>Sign in to the AWS IAM Console in your client account.</li>
-                      <li>Navigate to <strong>Roles</strong> &rarr; Click <strong>Create role</strong>.</li>
-                      <li>Select <strong>AWS account</strong> &rarr; Choose <strong>Another AWS account</strong> &rarr; Enter Account ID: <code className="px-1.5 py-0.5 bg-dark-950 rounded text-primary-300 font-mono">338920687491</code>.</li>
-                      <li>(Optional) If you want confused-deputy protection, check <strong>Require external ID</strong> and enter your secret External ID.</li>
-                      <li>In permissions, attach AWS managed policies: <code className="font-mono text-purple-300">SecurityAudit</code> and <code className="font-mono text-purple-300">ReadOnlyAccess</code>.</li>
-                      <li>Name the role <code className="font-mono text-green-300">ArchLens-Client-Scan-Role</code> and click <strong>Create role</strong>.</li>
-                      <li>Copy the generated Role ARN (e.g. <code className="font-mono text-gray-400">arn:aws:iam::123456789012:role/ArchLens-Client-Scan-Role</code>) and paste it into the ArchLens form.</li>
-                    </ol>
-                  </div>
+              <div className="p-4 bg-primary-500/10 border border-primary-500/20 rounded-xl text-xs text-primary-200">
+                <strong className="text-white block mb-2 text-sm font-semibold">How to Create the Read-Only IAM Role</strong>
+                <ol className="list-decimal list-inside space-y-2 text-gray-200">
+                  <li>Open the <strong>AWS IAM Console</strong> in your target AWS account.</li>
+                  <li>Navigate to <strong>Roles</strong> &rarr; Click <strong>Create role</strong>.</li>
+                  <li>Select <strong>AWS account</strong> &rarr; Choose <strong>Another AWS account</strong> &rarr; Enter ArchLens Account ID: <code className="px-2 py-0.5 bg-dark-950 rounded text-primary-300 font-mono font-bold">338920687491</code>.</li>
+                  <li>In permissions, attach the official AWS managed policy: <code className="font-mono text-emerald-300 font-semibold">ReadOnlyAccess</code>.</li>
+                  <li>Name the role <code className="font-mono text-emerald-300 font-semibold">ArchLensCrossAccountRole</code> and click <strong>Create role</strong>.</li>
+                  <li>Copy the generated Role ARN and paste it into the ArchLens scan input field above.</li>
+                </ol>
+              </div>
 
-                  <div className="p-3 bg-dark-900 border border-dark-700/60 rounded-xl text-xs text-gray-300">
-                    <strong className="text-white block mb-1">Option B: Use an Existing IAM Role</strong>
-                    <p className="mb-2">If you already have a designated read-only audit role (e.g. <code className="font-mono text-primary-300">ArchLens-Discovery-Role</code>), simply update its Trust Relationship with the policy below:</p>
-                    <ol className="list-decimal list-inside space-y-1 text-gray-300">
-                      <li>Open AWS IAM &rarr; <strong>Roles</strong> &rarr; Select your role.</li>
-                      <li>Click the <strong>Trust relationships</strong> tab &rarr; Click <strong>Edit trust policy</strong>.</li>
-                      <li>Paste the policy below and click <strong>Update Policy</strong>.</li>
-                    </ol>
-                  </div>
-
-                  <div className="relative">
-                    <div className="flex items-center justify-between bg-dark-950 px-3 py-1.5 rounded-t-lg border-t border-x border-dark-700">
-                      <span className="text-xs font-mono text-gray-400">TrustRelationship.json</span>
-                      <button
-                        onClick={() => copyToClipboard(TRUST_POLICY_JSON, 'trust')}
-                        className="btn-secondary text-xs flex items-center gap-1 py-1 px-2.5"
-                      >
-                        {copiedTrust ? <CheckIcon className="w-3.5 h-3.5 text-green-400" /> : <DocumentDuplicateIcon className="w-3.5 h-3.5" />}
-                        {copiedTrust ? 'Copied!' : 'Copy Policy'}
-                      </button>
-                    </div>
-                    <pre className="p-4 bg-dark-900 border border-dark-700 rounded-b-lg font-mono text-xs text-green-400 overflow-x-auto">
-                      {TRUST_POLICY_JSON}
-                    </pre>
-                  </div>
-                </div>
-              )}
-
-              {onboardingTab === 'cft' && (
-                <div className="space-y-3">
-                  <p className="text-xs text-gray-300">
-                    Deploy this CloudFormation template in the client account to automatically create the read-only IAM role with <strong>SecurityAudit</strong> and <strong>ReadOnlyAccess</strong> policies.
-                  </p>
-
-                  <div className="flex items-center gap-3">
+              <div className="p-4 bg-dark-900 border border-dark-700/60 rounded-xl text-xs text-gray-300">
+                <strong className="text-white block mb-1 font-semibold">For an Existing IAM Role</strong>
+                <p className="mb-2 text-gray-300">If you already have a designated read-only role, simply add ArchLens to its Trust Relationship policy:</p>
+                <div className="relative mt-2">
+                  <div className="flex items-center justify-between bg-dark-950 px-3 py-1.5 rounded-t-lg border-t border-x border-dark-700">
+                    <span className="text-xs font-mono text-gray-400">TrustRelationship.json</span>
                     <button
-                      onClick={() => downloadFile(CLIENT_CFT_TEMPLATE, 'archlens-client-onboarding.yaml', 'text/yaml')}
-                      className="btn-primary text-xs flex items-center gap-1.5"
+                      onClick={() => copyToClipboard(TRUST_POLICY_JSON, 'trust')}
+                      className="btn-secondary text-xs flex items-center gap-1 py-1 px-2.5"
                     >
-                      <ArrowDownTrayIcon className="w-4 h-4" /> Download CloudFormation YAML
-                    </button>
-                    <button
-                      onClick={() => copyToClipboard(CLIENT_CFT_TEMPLATE, 'cft')}
-                      className="btn-secondary text-xs flex items-center gap-1.5"
-                    >
-                      {copiedCft ? <CheckIcon className="w-4 h-4 text-green-400" /> : <DocumentDuplicateIcon className="w-4 h-4" />}
-                      {copiedCft ? 'Copied Template!' : 'Copy YAML'}
-                    </button>
-                    <a
-                      href="https://console.aws.amazon.com/cloudformation/home#/stacks/create/template"
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      className="btn-secondary text-xs flex items-center gap-1.5 text-primary-400"
-                    >
-                      <ArrowTopRightOnSquareIcon className="w-4 h-4" /> Open AWS CloudFormation Console
-                    </a>
-                  </div>
-
-                  <div className="relative mt-2">
-                    <pre className="p-4 bg-dark-900 border border-dark-700 rounded-lg font-mono text-[11px] text-gray-300 max-h-60 overflow-y-auto">
-                      {CLIENT_CFT_TEMPLATE}
-                    </pre>
-                  </div>
-                </div>
-              )}
-
-              {onboardingTab === 'terraform' && (
-                <div className="space-y-3">
-                  <p className="text-xs text-gray-300">
-                    If your client uses Terraform or OpenTofu, add this module to their infrastructure repository:
-                  </p>
-
-                  <div className="flex items-center gap-3">
-                    <button
-                      onClick={() => copyToClipboard(TERRAFORM_TEMPLATE, 'tf')}
-                      className="btn-primary text-xs flex items-center gap-1.5"
-                    >
-                      {copiedTf ? <CheckIcon className="w-4 h-4 text-green-400" /> : <DocumentDuplicateIcon className="w-4 h-4" />}
-                      {copiedTf ? 'Copied Terraform!' : 'Copy Terraform'}
+                      {copiedTrust ? <CheckIcon className="w-3.5 h-3.5 text-green-400" /> : <DocumentDuplicateIcon className="w-3.5 h-3.5" />}
+                      {copiedTrust ? 'Copied!' : 'Copy Policy'}
                     </button>
                   </div>
-
-                  <div className="relative mt-2">
-                    <pre className="p-4 bg-dark-900 border border-dark-700 rounded-lg font-mono text-[11px] text-purple-300 max-h-60 overflow-y-auto">
-                      {TERRAFORM_TEMPLATE}
-                    </pre>
-                  </div>
+                  <pre className="p-4 bg-dark-950 border border-dark-700 rounded-b-lg font-mono text-xs text-green-400 overflow-x-auto">
+                    {TRUST_POLICY_JSON}
+                  </pre>
                 </div>
-              )}
+              </div>
             </div>
 
             {/* Modal Footer */}

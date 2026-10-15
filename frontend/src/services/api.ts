@@ -40,22 +40,40 @@ async function apiRequest<T>(
       ...(body && { body: JSON.stringify(body) }),
     });
 
-    const data = await response.json();
+    let data: any = {};
+    try {
+      data = await response.json();
+    } catch {
+      data = {};
+    }
 
     if (!response.ok) {
+      let errorMsg = data?.error || data?.message;
+      if (!errorMsg) {
+        if (response.status === 504) {
+          errorMsg = 'AWS API Gateway timed out (504). Bedrock model took longer than 29 seconds to respond.';
+        } else if (response.status === 502) {
+          errorMsg = 'Bad Gateway (502): The backend Lambda or Bedrock service encountered an error.';
+        } else {
+          errorMsg = `Request failed with status ${response.status}`;
+        }
+      }
       return {
         data: data as T,
         status: response.status,
-        error: data.error || `Request failed with status ${response.status}`,
+        error: errorMsg,
       };
     }
 
     return { data: data as T, status: response.status };
   } catch (error) {
+    const msg = error instanceof Error ? error.message : 'Network error';
     return {
       data: {} as T,
       status: 500,
-      error: error instanceof Error ? error.message : 'Network error',
+      error: msg.includes('Failed to fetch')
+        ? 'Network request failed (API Gateway 504 or CORS error). Bedrock took longer than 29 seconds to respond.'
+        : msg,
     };
   }
 }
@@ -98,6 +116,19 @@ export async function listScans(params?: { accountId?: string }) {
  */
 export async function getScan(scanId: string) {
   return apiRequest<Record<string, unknown>>('/discover', 'POST', { action: 'get_scan', scanId });
+}
+
+/**
+ * Get current scan status from DynamoDB.
+ */
+export async function getScanStatus(scanId: string, accountId?: string) {
+  return apiRequest<{
+    scanId: string;
+    accountId: string;
+    status: 'in_progress' | 'completed' | 'failed';
+    resourceCount?: number;
+    error?: string;
+  }>('/discover', 'POST', { action: 'get_scan_status', scanId, accountId });
 }
 
 /**

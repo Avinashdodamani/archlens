@@ -124,19 +124,12 @@ export default function AiAssistant() {
           },
         ]);
       } else {
-        // Fallback with intelligent context
-        let fallbackText = "I could not reach Amazon Bedrock right now. ";
-        if (scanResult) {
-          fallbackText += `Based on your local scan (${scanResult.summary.total_resources} resources across ${scanResult.regions.join(', ')}), you can review your complete visual map in **YourArch** or run a full Well-Architected analysis in **RedefineYourArch**.`;
-        } else {
-          fallbackText += "Please connect your AWS account in **YourArch** to discover your resources first.";
-        }
-
+        const errDetail = res.error || "Unable to reach Amazon Bedrock. Please check your backend connection or retry.";
         setMessages((prev) => [
           ...prev,
           {
             role: 'assistant',
-            text: fallbackText,
+            text: `⚠️ **AI Service Notice**: ${errDetail}`,
             timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
           },
         ]);

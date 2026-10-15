@@ -232,7 +232,7 @@ export default function AutoRemediatePage() {
             <h2 className="text-xs font-bold text-white uppercase tracking-wider">ArchLens 7-Layer Enterprise Safety Stack</h2>
           </div>
           <span className="text-[10px] text-emerald-400 font-semibold bg-emerald-500/10 px-2 py-0.5 rounded-full border border-emerald-500/20">
-            Zero-Deletion Protection Active
+            Safe Remediation Active
           </span>
         </div>
         <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-2.5">
@@ -241,7 +241,7 @@ export default function AutoRemediatePage() {
             <p className="text-[11px] text-gray-400">Automated EBS, RDS, &amp; S3 backups taken before any mutation.</p>
           </div>
           <div className="p-2.5 rounded-lg bg-dark-900/80 border border-dark-700/60">
-            <span className="text-xs font-bold text-emerald-400 block mb-0.5">2. Zero Deletion Guardrail</span>
+            <span className="text-xs font-bold text-emerald-400 block mb-0.5">2. Zero-Deletion Safety Policy</span>
             <p className="text-[11px] text-gray-400">Engine rejects any destructive drop/delete API call automatically.</p>
           </div>
           <div className="p-2.5 rounded-lg bg-dark-900/80 border border-dark-700/60">

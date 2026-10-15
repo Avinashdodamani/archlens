@@ -154,8 +154,8 @@ export default function RedefineArchPage() {
         // Auto-generate scripts
         await handleGenerateScripts((response.data as any).recommendationId);
       }
-    } catch {
-      toast.error('Analysis failed. Please try again.');
+    } catch (err: any) {
+      toast.error(err?.message || 'Analysis failed. Please try again.');
       setCurrentStep('discovered');
     } finally {
       setLoading(false);
@@ -171,10 +171,21 @@ export default function RedefineArchPage() {
         generateTerraform({ recommendationId, scanId: scanResult?.scanId }),
       ]);
 
-      if (!cftRes.error) setCftResult(cftRes.data as any);
-      if (!tfRes.error) setTerraformResult(tfRes.data as any);
+      if (!cftRes.error) {
+        setCftResult(cftRes.data as any);
+      } else {
+        toast.error(`CFT Error: ${cftRes.error}`);
+      }
+
+      if (!tfRes.error) {
+        setTerraformResult(tfRes.data as any);
+      } else {
+        toast.error(`Terraform Error: ${tfRes.error}`);
+      }
+
       setCurrentStep('scripts_ready');
-    } catch {
+    } catch (err: any) {
+      toast.error(err?.message || 'Script generation failed');
       setCurrentStep('analyzed');
     }
   }
@@ -210,10 +221,7 @@ export default function RedefineArchPage() {
               <CpuChipIcon className="w-3 h-3 text-purple-400" />
               Amazon Bedrock
             </span>
-            <span className="px-2.5 py-0.5 rounded-full text-[10px] font-semibold bg-emerald-500/10 text-emerald-300 border border-emerald-500/30 flex items-center gap-1 shadow-sm">
-              <LockClosedIcon className="w-3 h-3 text-emerald-400" />
-              archlens-guardrail Active
-            </span>
+
           </div>
           <p className="text-gray-400 text-sm">AI-powered architecture optimization based on the AWS Well-Architected Framework</p>
         </div>

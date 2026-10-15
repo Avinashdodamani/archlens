@@ -23,6 +23,7 @@ dynamodb = boto3.resource('dynamodb')
 DATA_BUCKET = os.environ.get('DATA_BUCKET', 'archlens-data')
 MODEL_ID = os.environ.get('MODEL_ID', 'apac.anthropic.claude-3-5-sonnet-20241022-v2:0')
 BEDROCK_REGION = os.environ.get('BEDROCK_REGION', 'ap-south-1')
+MAX_TOKENS = int(os.environ['MAX_TOKENS'])
 AUDIT_TABLE = os.environ.get('AUDIT_TABLE', 'archlens-audit')
 
 # Initialize Bedrock client
@@ -130,17 +131,15 @@ def invoke_bedrock(prompt):
                     }
                 ],
                 "inferenceConfig": {
-                    "max_new_tokens": 5000,
-                    "temperature": 0.1,
-                    "top_p": 0.95
+                    "max_new_tokens": MAX_TOKENS,
+                    "temperature": 0.1
                 }
             }
         else:
             request_body = {
                 "anthropic_version": "bedrock-2023-05-31",
-                "max_tokens": 12000,
+                "max_tokens": MAX_TOKENS,
                 "temperature": 0.1,  # Low temperature for deterministic code generation
-                "top_p": 0.95,
                 "messages": [
                     {
                         "role": "user",
@@ -270,100 +269,6 @@ def validate_terraform_files(files):
     return not has_critical, issues
 
 
-def generate_fallback_terraform(recommendations, scan_id):
-    return f"""// --- main.tf ---
-terraform {{
-  required_version = ">= 1.5.0"
-  required_providers {{
-    aws = {{
-      source  = "hashicorp/aws"
-      version = "~> 5.0"
-    }}
-  }}
-}}
-
-provider "aws" {{
-  region = var.aws_region
-
-  default_tags {{
-    tags = {{
-      ManagedBy   = "ArchLens"
-      Environment = var.environment
-      ScanId      = "{scan_id}"
-    }}
-  }}
-}}
-
-# ── Security Pillar: AWS WAFv2 WebACL ──
-resource "aws_wafv2_web_acl" "main" {{
-  name        = "archlens-waf-${{var.environment}}"
-  description = "ArchLens WAF WebACL protecting public endpoints"
-  scope       = "REGIONAL"
-
-  default_action {{
-    allow {{}}
-  }}
-
-  visibility_config {{
-    cloudwatch_metrics_enabled = true
-    metric_name                = "archlensWafMetric"
-    sampled_requests_enabled   = true
-  }}
-
-  rule {{
-    name     = "AWSManagedRulesCommonRuleSet"
-    priority = 1
-
-    override_action {{
-      none {{}}
-    }}
-
-    statement {{
-      managed_rule_group_statement {{
-        name        = "AWSManagedRulesCommonRuleSet"
-        vendor_name = "AWS"
-      }}
-    }}
-
-    visibility_config {{
-      cloudwatch_metrics_enabled = true
-      metric_name                = "AWSManagedRulesCommonMetric"
-      sampled_requests_enabled   = true
-    }}
-  }}
-
-  lifecycle {{
-    prevent_destroy = false
-  }}
-}}
-
-// --- variables.tf ---
-variable "aws_region" {{
-  type        = string
-  description = "Target AWS Region"
-  default     = "ap-south-1"
-}}
-
-variable "environment" {{
-  type        = string
-  description = "Environment identifier"
-  default     = "prod"
-}}
-
-variable "scan_id" {{
-  type        = string
-  description = "ArchLens Scan Identifier"
-  default     = "{scan_id}"
-}}
-
-// --- outputs.tf ---
-output "waf_web_acl_arn" {{
-  description = "ARN of the provisioned WAF WebACL"
-  value       = aws_wafv2_web_acl.main.arn
-}}
-"""
-
-
 def lambda_handler(event, context):
     """
     Main handler for Terraform script generation.
@@ -455,20 +360,33 @@ def lambda_handler(event, context):
 
         logger.info(f"Generating Terraform for {len(active_recommendations)} recommendations")
 
-        # Generate Terraform using Bedrock with fallback
+        # Generate Terraform using Bedrock (NO FALLBACKS)
         prompt = generate_terraform_prompt(active_recommendations, architecture_data, scan_id)
         terraform_output = None
         try:
             terraform_output = invoke_bedrock(prompt)
         except Exception as bed_err:
-            logger.warning(f"Bedrock Terraform generation failed ({bed_err}). Using deterministic Terraform script.")
-            terraform_output = generate_fallback_terraform(active_recommendations, scan_id)
+            logger.error(f"Bedrock Terraform generation failed: {str(bed_err)}")
+            return {
+                'statusCode': 502,
+                'headers': {'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*'},
+                'body': json.dumps({'error': f"Bedrock Terraform Generation Failed: {str(bed_err)}"})
+            }
 
         # Parse into individual files
         terraform_files = parse_terraform_files(terraform_output)
 
         # Validate
         is_valid, validation_issues = validate_terraform_files(terraform_files)
+        if not is_valid or not terraform_files:
+            logger.error(f"Bedrock generated invalid Terraform: {validation_issues}")
+            return {
+                'statusCode': 502,
+                'headers': {'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*'},
+                'body': json.dumps({
+                    'error': f"Bedrock generated invalid Terraform: {'; '.join(validation_issues) if validation_issues else 'No valid HCL files parsed'}"
+                })
+            }
 
         # Save each file to S3
         timestamp = datetime.utcnow().strftime('%Y%m%d%H%M%S')

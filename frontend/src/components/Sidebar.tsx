@@ -123,13 +123,8 @@ export default function Sidebar() {
         </div>
       )}
 
-      {/* Collapse Toggle & Metadata */}
-      <div className="p-3 border-t border-dark-700/50 flex items-center justify-between">
-        {!sidebarCollapsed && (
-          <div className="text-[10px] text-gray-500 font-medium tracking-tight">
-            v1.0.0 Enterprise
-          </div>
-        )}
+      {/* Collapse Toggle */}
+      <div className="p-3 border-t border-dark-700/50 flex items-center justify-end">
         <button
           onClick={toggleSidebar}
           className={`p-2 text-gray-500 hover:text-white rounded-lg hover:bg-dark-800 transition-colors ${

@@ -2469,6 +2469,28 @@ def lambda_handler(event, context):
                 'body': json.dumps({'scans': items, 'count': len(items)}, default=str)
             }
 
+        if action == 'get_scan_status':
+            scan_id = body.get('scanId')
+            account_id = body.get('accountId')
+            if not scan_id:
+                return _err(400, 'scanId is required')
+            table = dynamodb.Table(SCANS_TABLE)
+            if account_id:
+                item_resp = table.get_item(Key={'scanId': scan_id, 'accountId': str(account_id)})
+            else:
+                scan_resp = table.scan(FilterExpression='scanId = :sid', ExpressionAttributeValues={':sid': scan_id})
+                items = scan_resp.get('Items', [])
+                item_resp = {'Item': items[0]} if items else {}
+            
+            item = item_resp.get('Item')
+            if not item:
+                return _err(404, f"Scan {scan_id} not found")
+            return {
+                'statusCode': 200,
+                'headers': _cors(),
+                'body': json.dumps(item, default=str)
+            }
+
         if action == 'get_scan':
             scan_id = body.get('scanId')
             if not scan_id:

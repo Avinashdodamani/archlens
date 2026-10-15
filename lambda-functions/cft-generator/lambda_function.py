@@ -23,6 +23,7 @@ dynamodb = boto3.resource('dynamodb')
 DATA_BUCKET = os.environ.get('DATA_BUCKET', 'archlens-data')
 MODEL_ID = os.environ.get('MODEL_ID', 'apac.anthropic.claude-3-5-sonnet-20241022-v2:0')
 BEDROCK_REGION = os.environ.get('BEDROCK_REGION', 'ap-south-1')
+MAX_TOKENS = int(os.environ['MAX_TOKENS'])
 AUDIT_TABLE = os.environ.get('AUDIT_TABLE', 'archlens-audit')
 
 # Initialize Bedrock client
@@ -116,17 +117,15 @@ def invoke_bedrock(prompt):
                     }
                 ],
                 "inferenceConfig": {
-                    "max_new_tokens": 5000,
-                    "temperature": 0.1,
-                    "top_p": 0.95
+                    "max_new_tokens": MAX_TOKENS,
+                    "temperature": 0.1
                 }
             }
         else:
             request_body = {
                 "anthropic_version": "bedrock-2023-05-31",
-                "max_tokens": 12000,
+                "max_tokens": MAX_TOKENS,
                 "temperature": 0.1,  # Low temperature for deterministic code generation
-                "top_p": 0.95,
                 "messages": [
                     {
                         "role": "user",
@@ -215,83 +214,6 @@ def validate_template_structure(template):
             issues.append("Warning: Wildcard (*) found in IAM actions - review for least privilege")
 
     return len([i for i in issues if not i.startswith('Warning')]) == 0, issues
-
-
-def generate_fallback_cft(recommendations, scan_id):
-    timestamp = datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S UTC')
-    return f"""AWSTemplateFormatVersion: '2010-09-09'
-Description: >
-  ArchLens AI-Generated Well-Architected Framework Remediation Template
-  Scan ID: {scan_id}
-  Generated: {timestamp}
-  Compliant with AWS Well-Architected Framework Best Practices
-
-Parameters:
-  Environment:
-    Type: String
-    Default: prod
-    AllowedValues: [dev, staging, prod]
-    Description: Deployment target environment
-
-Resources:
-  # ── Security Pillar: AWS WAFv2 WebACL ──
-  ArchLensWAFWebACL:
-    Type: AWS::WAFv2::WebACL
-    Properties:
-      Name: !Sub "archlens-waf-${{Environment}}"
-      Scope: REGIONAL
-      DefaultAction:
-        Allow: {{}}
-      VisibilityConfig:
-        SampledRequestsEnabled: true
-        CloudWatchMetricsEnabled: true
-        MetricName: !Sub "archlens-waf-${{Environment}}"
-      Rules:
-        - Name: AWSManagedRulesCommonRuleSet
-          Priority: 1
-          Statement:
-            ManagedRuleGroupStatement:
-              VendorName: AWS
-              Name: AWSManagedRulesCommonRuleSet
-          OverrideAction:
-            None: {{}}
-          VisibilityConfig:
-            SampledRequestsEnabled: true
-            CloudWatchMetricsEnabled: true
-            MetricName: AWSManagedRulesCommonMetric
-
-        - Name: AWSManagedRulesKnownBadInputsRuleSet
-          Priority: 2
-          Statement:
-            ManagedRuleGroupStatement:
-              VendorName: AWS
-              Name: AWSManagedRulesKnownBadInputsRuleSet
-          OverrideAction:
-            None: {{}}
-          VisibilityConfig:
-            SampledRequestsEnabled: true
-            CloudWatchMetricsEnabled: true
-            MetricName: AWSManagedRulesBadInputsMetric
-
-  # ── Operational Excellence: Error Rate Alarms ──
-  ArchLensSystemAlarm:
-    Type: AWS::CloudWatch::Alarm
-    Properties:
-      AlarmName: !Sub "archlens-system-error-alarm-${{Environment}}"
-      AlarmDescription: "Alerts when API Gateway or Lambda invocations produce errors"
-      MetricName: Errors
-      Namespace: AWS/Lambda
-      Statistic: Sum
-      Period: 300
-      EvaluationPeriods: 1
-      Threshold: 1
-      ComparisonOperator: GreaterThanOrEqualToThreshold
-
-Outputs:
-  WAFWebACLArn:
-    Description: ARN of the deployed WAF WebACL
-    Value: !GetAtt ArchLensWAFWebACL.Arn
-"""
 
 
 def lambda_handler(event, context):
@@ -385,18 +307,31 @@ def lambda_handler(event, context):
 
         logger.info(f"Generating CFT for {len(active_recommendations)} recommendations")
 
-        # Generate CloudFormation template with fallback
+        # Generate CloudFormation template (NO FALLBACKS)
         prompt = generate_cft_prompt(active_recommendations, architecture_data, scan_id)
         raw_template = None
         try:
             raw_template = invoke_bedrock(prompt)
         except Exception as bed_err:
-            logger.warning(f"Bedrock CFT generation failed ({bed_err}). Using deterministic CFT template.")
-            raw_template = generate_fallback_cft(active_recommendations, scan_id)
+            logger.error(f"Bedrock CFT generation failed: {str(bed_err)}")
+            return {
+                'statusCode': 502,
+                'headers': {'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*'},
+                'body': json.dumps({'error': f"Bedrock CFT Generation Failed: {str(bed_err)}"})
+            }
 
         # Clean and validate
         cft_template = clean_template(raw_template)
         is_valid, validation_issues = validate_template_structure(cft_template)
+        if not is_valid or not cft_template.strip():
+            logger.error(f"Bedrock generated invalid CloudFormation template: {validation_issues}")
+            return {
+                'statusCode': 502,
+                'headers': {'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*'},
+                'body': json.dumps({
+                    'error': f"Bedrock generated invalid CloudFormation template: {'; '.join(validation_issues) if validation_issues else 'Empty template'}"
+                })
+            }
 
         # Generate unique filename
         timestamp = datetime.utcnow().strftime('%Y%m%d%H%M%S')

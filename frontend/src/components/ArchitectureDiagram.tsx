@@ -63,6 +63,7 @@ interface ArchitectureDiagramProps {
   relationships: Relationship[];
   servicesFootprint?: { service: string; monthly_cost_usd: number }[];
   viewMode?: DiagramViewMode;
+  accountId?: string;
 }
 
 // Custom group node to ensure boundary headers, icons, and titles render properly in ReactFlow
@@ -1157,7 +1158,8 @@ async function buildAndLayout(
   relationships: Relationship[],
   isDark: boolean,
   viewMode: DiagramViewMode,
-  servicesFootprint: { service: string; monthly_cost_usd: number }[] = []
+  servicesFootprint: { service: string; monthly_cost_usd: number }[] = [],
+  explicitAccountId?: string
 ): Promise<{ nodes: Node[]; edges: Edge[] }> {
   const serviceResources = resources.filter(
     (r) => !INFRASTRUCTURE_CONTAINER_TYPES.has(r.type) && !NON_DIAGRAM_TYPES.has(r.type)
@@ -1208,8 +1210,8 @@ async function buildAndLayout(
 
   const groupStyles = getGroupStyles(isDark);
   const accountRes = resources.find((r) => r.account_id || r.account);
-  const accountId = (accountRes?.account_id || accountRes?.account || '338920687491') as string;
-  const cloudLabel = `AWS Cloud · Account: ${accountId}`;
+  const accountId = (explicitAccountId || accountRes?.account_id || accountRes?.account || '') as string;
+  const cloudLabel = accountId ? `AWS Cloud · Account: ${accountId}` : 'AWS Cloud';
 
   // AWS Cloud container wraps every region + global row.
   const cloudNode = boundaryElkNode(
@@ -1361,9 +1363,11 @@ export default function ArchitectureDiagram({
   relationships,
   servicesFootprint = [],
   viewMode: propViewMode,
+  accountId: propAccountId,
 }: ArchitectureDiagramProps) {
-  const { darkMode: isDark, diagramViewMode: storeViewMode } = useAppStore();
+  const { darkMode: isDark, diagramViewMode: storeViewMode, accountId: storeAccountId, scanResult } = useAppStore();
   const diagramViewMode = propViewMode || storeViewMode;
+  const effectiveAccountId = propAccountId || scanResult?.accountId || storeAccountId || '';
 
   const nodeTypes = React.useMemo(() => ({
     group: CustomGroupNode,
@@ -1383,7 +1387,7 @@ export default function ArchitectureDiagram({
     }
 
     setIsLayingOut(true);
-    buildAndLayout(resources, relationships, isDark, diagramViewMode, servicesFootprint)
+    buildAndLayout(resources, relationships, isDark, diagramViewMode, servicesFootprint, effectiveAccountId)
       .then(({ nodes: laidNodes, edges: laidEdges }) => {
         if (cancelled) return;
         setNodes(laidNodes);
@@ -1400,7 +1404,7 @@ export default function ArchitectureDiagram({
     return () => {
       cancelled = true;
     };
-  }, [resources, relationships, isDark, diagramViewMode, servicesFootprint, setNodes, setEdges]);
+  }, [resources, relationships, isDark, diagramViewMode, servicesFootprint, effectiveAccountId, setNodes, setEdges]);
 
   const diagramBg = getDiagramBackground(isDark);
   const gridColor = getDiagramGridColor(isDark);

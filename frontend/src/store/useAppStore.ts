@@ -380,8 +380,8 @@ export const useAppStore = create<AppState>()(
 
             // Ensure connected accounts and roleArn are populated
             const currentConnected = get().connectedAccounts;
-            const primaryAccountId = mapped[0]?.accountId || get().accountId || '338920687491';
-            const defaultRole = `arn:aws:iam::${primaryAccountId}:role/archlens-client-readonly-role`;
+            const primaryAccountId = get().accountId || mapped[0]?.accountId || '';
+            const defaultRole = primaryAccountId ? `arn:aws:iam::${primaryAccountId}:role/archlens-client-readonly-role` : '';
 
             let updatedAccounts = currentConnected.map(acc => ({
               ...acc,
@@ -390,7 +390,7 @@ export const useAppStore = create<AppState>()(
             if (primaryAccountId && !updatedAccounts.some((a) => a.accountId === primaryAccountId)) {
               updatedAccounts.push({
                 id: `acc-${primaryAccountId}`,
-                accountName: 'Production AWS Account',
+                accountName: 'Connected AWS Account',
                 accountId: primaryAccountId,
                 roleArn: defaultRole,
                 addedAt: mapped[0]?.timestamp || new Date().toISOString(),
@@ -405,8 +405,8 @@ export const useAppStore = create<AppState>()(
               nextScanNumber: total + 1,
               connectedAccounts: updatedAccounts,
               roleArn: currentRole,
-              accountId: get().accountId || primaryAccountId,
-              activeAccountId: get().activeAccountId || updatedAccounts[0]?.id,
+              accountId: primaryAccountId,
+              activeAccountId: get().activeAccountId || updatedAccounts[0]?.id || '',
             });
 
             // Automatically load the latest scan if scanResult is currently empty
