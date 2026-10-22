@@ -99,8 +99,7 @@ export const AWS_SERVICE_COLORS: Record<string, string> = {
   SystemsManager: AWS_COLOR_COSMOS, // Management & Governance
   TransitGateway: AWS_COLOR_GALAXY, // Networking
   FSx: AWS_COLOR_ENDOR,             // Storage
-  Batch: AWS_COLOR_SMILE,           // Compute
-  AppRunner: AWS_COLOR_SMILE,       // Compute
+  Batch: AWS_COLOR_SMILE,           // Compute       // Compute
   AppSync: AWS_COLOR_COSMOS,        // Application Integration
 };
 
@@ -206,6 +205,14 @@ export const AWS_GROUP_STYLES_DARK: Record<string, GroupStyle> = {
     labelColor: AWS_COLOR_COSMOS,
     label: 'Messaging & Event Integration',
   },
+  SharedServices: {
+    borderColor: AWS_COLOR_NEBULA,
+    borderStyle: 'dashed',
+    borderWidth: 1,
+    backgroundColor: 'rgba(201, 37, 209, 0.05)',
+    labelColor: AWS_COLOR_NEBULA,
+    label: 'AWS Managed & Shared Services',
+  },
 };
 
 /** Light theme group styles — extracted from Light-BG PPT */
@@ -297,6 +304,14 @@ export const AWS_GROUP_STYLES_LIGHT: Record<string, GroupStyle> = {
     backgroundColor: 'rgba(231, 21, 123, 0.03)',
     labelColor: AWS_COLOR_COSMOS,
     label: 'Messaging & Event Integration',
+  },
+  SharedServices: {
+    borderColor: AWS_COLOR_NEBULA,
+    borderStyle: 'dashed',
+    borderWidth: 1,
+    backgroundColor: 'rgba(201, 37, 209, 0.03)',
+    labelColor: AWS_COLOR_NEBULA,
+    label: 'AWS Managed & Shared Services',
   },
 };
 

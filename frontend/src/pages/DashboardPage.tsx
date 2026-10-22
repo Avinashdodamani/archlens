@@ -1,3 +1,4 @@
+import { useEffect } from 'react';
 import { useAppStore } from '../store/useAppStore';
 import { useNavigate } from 'react-router-dom';
 import {
@@ -23,8 +24,12 @@ import { scoreTextClass, scoreBarClass } from '../config/theme';
 import { formatScanTime } from '../utils/formatDate';
 
 export default function DashboardPage() {
-  const { scanResult, analysisResult, savedScans, connectedAccounts, activeAccountId, darkMode, currentStep } = useAppStore();
+  const { scanResult, analysisResult, savedScans, connectedAccounts, activeAccountId, darkMode, currentStep, syncScansFromBackend } = useAppStore();
   const navigate = useNavigate();
+
+  useEffect(() => {
+    syncScansFromBackend();
+  }, []);
 
   const overallScore = analysisResult?.analysis?.overall_score || 0;
   const pillarScores = analysisResult?.analysis?.pillar_scores || {};

@@ -4,7 +4,7 @@
  * Authentication tokens are attached automatically.
  */
 
-import { fetchAuthSession } from 'aws-amplify/auth';
+import { fetchAuthSession, getCurrentUser } from 'aws-amplify/auth';
 import { APP_CONFIG } from '../config/constants';
 
 interface ApiResponse<T = unknown> {
@@ -17,6 +17,15 @@ async function getAuthToken(): Promise<string> {
   try {
     const session = await fetchAuthSession();
     return session.tokens?.idToken?.toString() || '';
+  } catch {
+    return '';
+  }
+}
+
+async function getCurrentUserEmail(): Promise<string> {
+  try {
+    const user = await getCurrentUser();
+    return (user.signInDetails?.loginId || '').trim().toLowerCase();
   } catch {
     return '';
   }
@@ -45,6 +54,34 @@ async function apiRequest<T>(
       data = await response.json();
     } catch {
       data = {};
+    }
+
+    // Unwrap Lambda proxy integration responses where body is serialized JSON
+    if (data && typeof data === 'object' && ('statusCode' in data || 'body' in data)) {
+      if (typeof data.body === 'string') {
+        try {
+          const parsed = JSON.parse(data.body);
+          if (data.statusCode && data.statusCode >= 400) {
+            return {
+              data: parsed as T,
+              status: data.statusCode,
+              error: parsed?.error || parsed?.message || `Request failed with status ${data.statusCode}`,
+            };
+          }
+          data = parsed;
+        } catch {
+          // If body is not JSON, leave as is
+        }
+      } else if (data.body && typeof data.body === 'object') {
+        if (data.statusCode && data.statusCode >= 400) {
+          return {
+            data: data.body as T,
+            status: data.statusCode,
+            error: data.body?.error || data.body?.message || `Request failed with status ${data.statusCode}`,
+          };
+        }
+        data = data.body;
+      }
     }
 
     if (!response.ok) {
@@ -87,14 +124,20 @@ export async function discoverResources(params: {
   regions?: string[];
   accountId?: string;
   externalId?: string;
+  userEmail?: string;
 }) {
-  return apiRequest('/discover', 'POST', params as unknown as Record<string, unknown>);
+  const email = params.userEmail || await getCurrentUserEmail();
+  return apiRequest('/discover', 'POST', {
+    ...params,
+    ...(email && { userEmail: email }),
+  } as unknown as Record<string, unknown>);
 }
 
 /**
  * List all saved scans from DynamoDB.
  */
-export async function listScans(params?: { accountId?: string }) {
+export async function listScans(params?: { accountId?: string; userEmail?: string }) {
+  const email = params?.userEmail || await getCurrentUserEmail();
   return apiRequest<{
     scans: Array<{
       scanId: string;
@@ -108,7 +151,11 @@ export async function listScans(params?: { accountId?: string }) {
       s3Key?: string;
     }>;
     count: number;
-  }>('/discover', 'POST', { action: 'list_scans', ...params });
+  }>('/discover', 'POST', {
+    action: 'list_scans',
+    ...params,
+    ...(email && { userEmail: email }),
+  });
 }
 
 /**
@@ -146,11 +193,34 @@ export async function analyzeArchitecture(params: {
   pillars: string[];
   architectureData?: unknown;
 }) {
-  return apiRequest('/analyze', 'POST', params as unknown as Record<string, unknown>);
+  return apiRequest<{
+    status?: string;
+    scanId?: string;
+    message?: string;
+    pollIntervalSeconds?: number;
+    recommendationId?: string;
+    analysis?: unknown;
+    architectureData?: unknown;
+    [key: string]: unknown;
+  }>('/analyze', 'POST', params as unknown as Record<string, unknown>);
 }
 
 /**
- * Interactive AI Chatbot powered by Amazon Bedrock (Nova Pro).
+ * Poll current status of asynchronous analysis job (<100ms response).
+ */
+export async function getAnalysisStatus(scanId: string) {
+  return apiRequest<{
+    status: 'IN_PROGRESS' | 'COMPLETED' | 'FAILED' | 'NOT_FOUND' | 'ERROR';
+    scanId?: string;
+    result?: unknown;
+    error?: string;
+    recommendationId?: string;
+    updatedAt?: string;
+  }>('/analyze', 'POST', { action: 'get_status', scanId });
+}
+
+/**
+ * Interactive AI Chatbot powered by Amazon Bedrock.
  */
 export async function chatWithAI(params: {
   question: string;
@@ -183,6 +253,18 @@ export async function generateCFT(params: {
 }
 
 /**
+ * Poll current status of asynchronous CloudFormation generation job.
+ */
+export async function getCFTStatus(jobId: string) {
+  return apiRequest<{
+    status: 'IN_PROGRESS' | 'COMPLETED' | 'FAILED' | 'NOT_FOUND' | 'ERROR';
+    jobId?: string;
+    result?: unknown;
+    error?: string;
+  }>('/generate-cft', 'POST', { action: 'get_status', jobId });
+}
+
+/**
  * Generate Terraform scripts from recommendations.
  */
 export async function generateTerraform(params: {
@@ -192,6 +274,18 @@ export async function generateTerraform(params: {
   architectureData?: unknown;
 }) {
   return apiRequest('/generate-terraform', 'POST', params as unknown as Record<string, unknown>);
+}
+
+/**
+ * Poll current status of asynchronous Terraform generation job.
+ */
+export async function getTerraformStatus(jobId: string) {
+  return apiRequest<{
+    status: 'IN_PROGRESS' | 'COMPLETED' | 'FAILED' | 'NOT_FOUND' | 'ERROR';
+    jobId?: string;
+    result?: unknown;
+    error?: string;
+  }>('/generate-terraform', 'POST', { action: 'get_status', jobId });
 }
 
 /**

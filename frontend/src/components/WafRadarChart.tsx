@@ -14,7 +14,7 @@ interface WafRadarChartProps {
 }
 
 /**
- * WAF Pillar Radar (spider) chart — visualizes compliance across all 6
+ * AWS Well-Architected Framework Pillar Radar (spider) chart — visualizes compliance across all 6
  * Well-Architected Framework pillars, per the SOW dashboard spec.
  */
 export default function WafRadarChart({ pillarScores, isDark }: WafRadarChartProps) {

@@ -13,11 +13,10 @@ import InsightHubPage from './pages/InsightHubPage';
 import CallbackPage from './pages/CallbackPage';
 
 function App() {
-  const { isAuthenticated, setAuth, syncScansFromBackend, darkMode } = useAppStore();
+  const { isAuthenticated, setAuth, syncScansFromBackend, reset, darkMode } = useAppStore();
 
   useEffect(() => {
     checkAuthStatus();
-    syncScansFromBackend();
   }, []);
 
   // Keep the <html> dark class in sync with the store on every change.
@@ -27,8 +26,8 @@ function App() {
 
   async function checkAuthStatus() {
     try {
-      const user = await getCurrentUser();
-      const email = user.signInDetails?.loginId || '';
+      const authUser = await getCurrentUser();
+      const email = authUser.signInDetails?.loginId || '';
       let name = '';
       try {
         const attributes = await fetchUserAttributes();
@@ -36,10 +35,21 @@ function App() {
       } catch {
         name = '';
       }
+
+      // Ensure store is pristine and contains no residual data from any other account
+      const storedUser = useAppStore.getState().user;
+      if (!storedUser?.email || (email && storedUser.email.toLowerCase() !== email.toLowerCase())) {
+        reset();
+        localStorage.removeItem('archlens-storage');
+      }
+
       setAuth(true, {
         email,
         name: name || email.split('@')[0],
       });
+
+      // Synchronize scans only for the active user's connected accounts
+      await syncScansFromBackend();
     } catch {
       setAuth(false, null);
     }

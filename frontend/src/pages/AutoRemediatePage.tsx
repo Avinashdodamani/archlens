@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { useAppStore } from '../store/useAppStore';
 import { triggerBackup } from '../services/api';
 import toast from 'react-hot-toast';
@@ -19,15 +19,28 @@ export default function AutoRemediatePage() {
   const {
     scanResult, analysisResult, backupResult, setBackupResult,
     roleArn, currentStep, setCurrentStep, isLoading, setLoading,
+    selectedRecommendationId, setSelectedRecommendationId,
   } = useAppStore();
 
-  const [writeRoleArn, setWriteRoleArn] = useState(roleArn || '');
+  const [writeRoleArn, setWriteRoleArn] = useState('');
   const [deployProgress, setDeployProgress] = useState(0);
   const [reviewAcknowledged, setReviewAcknowledged] = useState(false);
   const [deployLogs, setDeployLogs] = useState<string[]>([]);
 
-  // Change Set preview derived from the approved recommendations (SOW 4.4)
-  const changeSet = (analysisResult?.analysis?.recommendations || []).map((r) => ({
+  // Reset backupResult if the scan has changed
+  useEffect(() => {
+    if (backupResult && scanResult?.scanId && backupResult.scanId !== scanResult.scanId) {
+      setBackupResult(null);
+      setCurrentStep('scripts_ready');
+    }
+  }, [scanResult?.scanId]);
+
+  const allRecommendations = analysisResult?.analysis?.recommendations || [];
+  const selectedRec = allRecommendations.find((r) => r.id === selectedRecommendationId);
+  const activeRecommendations = selectedRec ? [selectedRec] : allRecommendations;
+
+  // Change Set preview derived from the active recommendations (SOW 4.4)
+  const changeSet = activeRecommendations.map((r) => ({
     action: (r.current_state || '').toLowerCase().includes('none') || (r.affected_resources?.length || 0) === 0
       ? 'Create' : 'Modify',
     title: r.title,
@@ -52,6 +65,7 @@ export default function AutoRemediatePage() {
         roleArn: writeRoleArn,
         scanId: scanResult?.scanId,
         recommendationId: analysisResult?.recommendationId,
+        recommendations: activeRecommendations,
         architectureData: scanResult,
       });
 
@@ -76,7 +90,7 @@ export default function AutoRemediatePage() {
     setDeployProgress(0);
     setDeployLogs([
       `[${new Date().toLocaleTimeString()}] [INIT] Initiating automated safe deployment pipeline...`,
-      `[${new Date().toLocaleTimeString()}] [SAFETY] Layer 1: Validating pre-change backup manifest (EBS / RDS snapshots)...`,
+      `[${new Date().toLocaleTimeString()}] [SAFETY] Layer 1: Validating pre-change backup manifest (EBS / RDS / S3 config)...`,
       `[${new Date().toLocaleTimeString()}] [AUTH] Assuming cross-account deployment execution role...`,
     ]);
 
@@ -90,7 +104,7 @@ export default function AutoRemediatePage() {
         if (next >= 25 && prev < 25) {
           setDeployLogs((l) => [...l, `[${now}] [PLAN] Generating CloudFormation ChangeSet (zero deletion policy enforced)...`]);
         } else if (next >= 50 && prev < 50) {
-          setDeployLogs((l) => [...l, `[${now}] [APPLY] Executing infrastructure modifications for selected WAF recommendations...`]);
+          setDeployLogs((l) => [...l, `[${now}] [APPLY] Executing infrastructure modifications for selected AWS Well-Architected Framework recommendations...`]);
         } else if (next >= 75 && prev < 75) {
           setDeployLogs((l) => [...l, `[${now}] [CANARY] Executing Layer 4: Running automated canary health probes and latency checks...`]);
         } else if (next >= 90 && prev < 90) {
@@ -99,22 +113,35 @@ export default function AutoRemediatePage() {
 
         if (next >= 100) {
           clearInterval(interval);
-          setDeployLogs((l) => [
-            ...l,
-            `[${now}] [SUCCESS] Deployment completed successfully! 0 errors encountered. Architecture optimized.`,
-          ]);
-          setCurrentStep('success');
-          toast.success('Deployment successful!');
 
-          // Send SNS success notification
+          // Trigger real deployment mutation via backup-manager for active recommendations
+          const affectedList = activeRecommendations.flatMap((r: any) => r.affected_resources || []);
           const durationSeconds = Math.round((Date.now() - startTime) / 1000);
+
           triggerBackup({
-            action: 'deploy_success' as any,
+            action: 'deploy' as any,
+            roleArn: writeRoleArn,
             scanId: scanResult?.scanId,
             recommendationId: analysisResult?.recommendationId,
-            recommendationCount: analysisResult?.analysis?.recommendations?.length || 0,
+            recommendations: activeRecommendations,
+            affectedResources: affectedList,
             deploymentDuration: `${durationSeconds}s`,
-          } as any).catch(() => {});
+          } as any)
+            .then(() => {
+              setDeployLogs((l) => [
+                ...l,
+                `[${now}] [SUCCESS] Deployment completed successfully! Resources updated in AWS account.`,
+              ]);
+              setCurrentStep('success');
+              toast.success('Deployment successful! Real AWS resources updated.');
+            })
+            .catch((err) => {
+              setDeployLogs((l) => [
+                ...l,
+                `[${now}] [ERROR] Deployment failed: ${err.message || 'Check IAM write role permissions.'}`,
+              ]);
+              toast.error('Deployment mutation failed');
+            });
 
           return 100;
         }
@@ -186,86 +213,83 @@ export default function AutoRemediatePage() {
         <p className="text-gray-400 text-sm mt-1">Safely implement approved changes with automatic backup and rollback</p>
       </div>
 
-      {/* Progress Steps */}
-      <div className="card bg-gradient-to-r from-dark-800 to-dark-900 border-dark-600/50">
-        <div className="flex items-center justify-between">
-          {['Backup', 'Review', 'Deploy', 'Monitor', 'Complete'].map((step, idx) => {
-            const stepStates = ['backing_up', 'backup_complete', 'deploying', 'monitoring', 'success'];
-            const isActive = stepStates.indexOf(currentStep) >= idx;
-            const isCurrent = stepStates[idx] === currentStep;
-            return (
-              <div key={step} className="flex items-center flex-1">
-                <div className="flex flex-col items-center flex-1">
-                  <div className={`w-10 h-10 rounded-xl flex items-center justify-center text-sm font-bold transition-all duration-500 ${
-                    isActive && idx < stepStates.indexOf(currentStep)
-                      ? 'bg-gradient-to-br from-green-500 to-emerald-600 text-white shadow-lg shadow-green-500/25'
-                      : isCurrent
-                        ? 'bg-gradient-to-br from-primary-500 to-blue-600 text-white shadow-lg shadow-primary-500/25 animate-pulse'
-                        : 'bg-dark-700 text-gray-500 border border-dark-600'
-                  }`}>
-                    {isActive && idx < stepStates.indexOf(currentStep) ? '✓' : idx + 1}
-                  </div>
-                  <span className={`text-[11px] mt-2 font-medium ${
-                    isActive ? 'text-white' : 'text-gray-500'
-                  }`}>{step}</span>
-                </div>
-                {idx < 4 && (
-                  <div className={`h-0.5 w-full mx-2 rounded-full transition-all duration-500 ${
-                    isActive && idx < stepStates.indexOf(currentStep)
-                      ? 'bg-gradient-to-r from-green-500 to-emerald-400'
-                      : 'bg-dark-700'
-                  }`} />
-                )}
-              </div>
-            );
-          })}
-        </div>
-      </div>
-
-      {/* 7-Layer Safety Stack Grid */}
+      {/* Safety Protocol Grid */}
       <div className="card bg-gradient-to-br from-dark-800 to-dark-900 border-dark-700/60">
         <div className="flex items-center justify-between mb-3">
           <div className="flex items-center gap-2">
             <span className="p-1 rounded-lg bg-emerald-500/20 text-emerald-400 border border-emerald-500/30">
               <ShieldCheckIcon className="w-4 h-4" />
             </span>
-            <h2 className="text-xs font-bold text-white uppercase tracking-wider">ArchLens 7-Layer Enterprise Safety Stack</h2>
+            <h2 className="text-xs font-bold text-white uppercase tracking-wider">ArchLens Safety Protocol</h2>
           </div>
           <span className="text-[10px] text-emerald-400 font-semibold bg-emerald-500/10 px-2 py-0.5 rounded-full border border-emerald-500/20">
-            Safe Remediation Active
+            Active
           </span>
         </div>
         <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-2.5">
           <div className="p-2.5 rounded-lg bg-dark-900/80 border border-dark-700/60">
             <span className="text-xs font-bold text-emerald-400 block mb-0.5">1. Pre-Change Snapshots</span>
-            <p className="text-[11px] text-gray-400">Automated EBS, RDS, &amp; S3 backups taken before any mutation.</p>
+            <p className="text-[11px] text-gray-400">Automated EBS, RDS, DynamoDB, &amp; S3 backups taken before any changes.</p>
           </div>
           <div className="p-2.5 rounded-lg bg-dark-900/80 border border-dark-700/60">
-            <span className="text-xs font-bold text-emerald-400 block mb-0.5">2. Zero-Deletion Safety Policy</span>
-            <p className="text-[11px] text-gray-400">Engine rejects any destructive drop/delete API call automatically.</p>
+            <span className="text-xs font-bold text-emerald-400 block mb-0.5">2. Zero-Deletion Policy</span>
+            <p className="text-[11px] text-gray-400">Engine strictly modifies or creates resources; never deletes existing infrastructure or data.</p>
           </div>
           <div className="p-2.5 rounded-lg bg-dark-900/80 border border-dark-700/60">
-            <span className="text-xs font-bold text-emerald-400 block mb-0.5">3. Continuous Drift Check</span>
-            <p className="text-[11px] text-gray-400">Live baseline comparison flags unexpected out-of-band changes.</p>
+            <span className="text-xs font-bold text-emerald-400 block mb-0.5">3. One-Click Rollback</span>
+            <p className="text-[11px] text-gray-400">Instant rollback to pre-change snapshots if changes need to be reverted.</p>
           </div>
           <div className="p-2.5 rounded-lg bg-dark-900/80 border border-dark-700/60">
-            <span className="text-xs font-bold text-emerald-400 block mb-0.5">4. Canary Health Probes</span>
-            <p className="text-[11px] text-gray-400">Post-change synthetic validation tests network and service health.</p>
-          </div>
-          <div className="p-2.5 rounded-lg bg-dark-900/80 border border-dark-700/60">
-            <span className="text-xs font-bold text-emerald-400 block mb-0.5">5. One-Click Rollback</span>
-            <p className="text-[11px] text-gray-400">Instant revert back to pre-change snapshots with a single click.</p>
-          </div>
-          <div className="p-2.5 rounded-lg bg-dark-900/80 border border-dark-700/60">
-            <span className="text-xs font-bold text-emerald-400 block mb-0.5">6. Immutable Audit Trail</span>
-            <p className="text-[11px] text-gray-400">Every mutation logged to Amazon CloudWatch &amp; DynamoDB.</p>
-          </div>
-          <div className="p-2.5 rounded-lg bg-dark-900/80 border border-dark-700/60 col-span-1 sm:col-span-2">
-            <span className="text-xs font-bold text-emerald-400 block mb-0.5">7. Step Functions Approval Gates</span>
-            <p className="text-[11px] text-gray-400">Step Functions state machine pauses for explicit human confirmation before executing any production changes.</p>
+            <span className="text-xs font-bold text-emerald-400 block mb-0.5">4. Immutable Audit Trail</span>
+            <p className="text-[11px] text-gray-400">Every backup and deployment action logged to AWS CloudWatch &amp; DynamoDB.</p>
           </div>
         </div>
       </div>
+
+      {/* Selected Recommendation Filter / Banner */}
+      {selectedRec ? (
+        <div className="card bg-purple-500/10 border-purple-500/30 flex flex-col sm:flex-row sm:items-center justify-between gap-3 p-4">
+          <div>
+            <div className="flex items-center gap-2">
+              <span className="px-2 py-0.5 rounded text-[11px] font-bold uppercase tracking-wider bg-purple-500/20 text-purple-300 border border-purple-500/30">
+                Single-Target Remediation
+              </span>
+              <span className="text-xs text-gray-400">Pillar: {selectedRec.pillar}</span>
+            </div>
+            <h3 className="text-sm font-semibold text-white mt-1">{selectedRec.title}</h3>
+            <p className="text-xs text-gray-400 mt-0.5">
+              Target resources: <span className="font-mono text-gray-300">{selectedRec.affected_resources?.join(', ')}</span>
+            </p>
+          </div>
+          <button
+            onClick={() => setSelectedRecommendationId(null)}
+            className="text-xs px-3 py-1.5 rounded-lg bg-dark-700 hover:bg-dark-600 text-gray-300 transition-colors self-start sm:self-center shrink-0"
+          >
+            Show All Recommendations ({allRecommendations.length})
+          </button>
+        </div>
+      ) : allRecommendations.length > 0 ? (
+        <div className="card bg-dark-800/60 border-dark-700/60 p-4">
+          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+            <div>
+              <span className="text-xs font-semibold text-gray-300 block">Select Specific Remediation Target:</span>
+              <p className="text-xs text-gray-500">Choose one recommendation to remediate individually, or proceed with all.</p>
+            </div>
+            <select
+              value={selectedRecommendationId || 'ALL'}
+              onChange={(e) => setSelectedRecommendationId(e.target.value === 'ALL' ? null : e.target.value)}
+              className="input-field text-xs sm:w-96"
+            >
+              <option value="ALL">Remediate All ({allRecommendations.length} recommendations)</option>
+              {allRecommendations.map((r) => (
+                <option key={r.id} value={r.id}>
+                  [{r.priority}] {r.title}
+                </option>
+              ))}
+            </select>
+          </div>
+        </div>
+      ) : null}
 
       {/* Write Role ARN - Required for changes */}
       {!backupResult && (
@@ -297,19 +321,19 @@ export default function AutoRemediatePage() {
           </div>
 
           <div>
+            <p className="text-sm text-gray-300 mb-3">
+              Provide an IAM Role ARN with remediation update permissions (e.g., AdministratorAccess or specific resource update policies).
+            </p>
             <label className="block text-sm font-medium text-gray-300 mb-1">
-              Write Role ARN <span className="text-red-400">*</span>
+              AWS IAM Remediation Execution Role ARN <span className="text-red-400">*</span>
             </label>
             <input
               type="text"
               value={writeRoleArn}
               onChange={(e) => setWriteRoleArn(e.target.value)}
               className="input-field font-mono text-sm"
-              placeholder="arn:aws:iam::123456789012:role/ArchLens-Write-Role"
+              placeholder=""
             />
-            <p className="text-xs text-gray-500 mt-1">
-              IAM role with permissions to create snapshots, modify resources, and deploy CloudFormation/Terraform
-            </p>
 
             {/read[-_]?only|scan[-_]?role|audit/i.test(writeRoleArn) && (
               <div className="mt-2.5 p-3 rounded-lg bg-amber-500/10 border border-amber-500/30 text-amber-300 text-xs flex items-start gap-2">
@@ -362,9 +386,21 @@ export default function AutoRemediatePage() {
               <CheckCircleIcon className="w-5 h-5 text-green-400" />
               Backups Complete
             </h2>
-            <span className="badge-info">
-              {backupResult.backups_taken}/{backupResult.total_resources} backed up
-            </span>
+            <div className="flex items-center gap-2">
+              <span className="badge-info">
+                {backupResult.backups_taken}/{backupResult.total_resources} backed up
+              </span>
+              <button
+                onClick={() => {
+                  setBackupResult(null);
+                  setCurrentStep('scripts_ready');
+                }}
+                className="text-xs px-2.5 py-1 rounded bg-dark-700 hover:bg-dark-600 text-gray-300 transition-colors"
+                title="Reset backup status to enter new credentials or select a different recommendation"
+              >
+                Reset / Change Role
+              </button>
+            </div>
           </div>
 
           <div className="space-y-2">

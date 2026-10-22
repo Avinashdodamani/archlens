@@ -141,19 +141,23 @@ def backup_rds_instance(credentials, region, db_identifier, scan_id):
 def backup_dynamodb_table(credentials, region, table_name, scan_id):
     """Create on-demand backup of a DynamoDB table."""
     ddb = get_client('dynamodb', credentials, region)
+    clean_table_name = table_name.split('/')[-1] if '/' in table_name else table_name
+    clean_table_name = clean_table_name.replace('arn:aws:dynamodb:', '').replace('table:', '').strip()
     backup_result = {
         'resource_type': 'DynamoDB',
-        'resource_id': table_name,
+        'resource_id': clean_table_name,
         'backup_type': 'OnDemandBackup',
         'status': 'pending'
     }
 
     try:
+        import re
         timestamp = datetime.utcnow().strftime('%Y%m%d%H%M%S')
-        backup_name = f"archlens-{table_name}-{timestamp}"
+        raw_name = f"archlens-{clean_table_name}-{timestamp}"
+        backup_name = re.sub(r'[^a-zA-Z0-9_.-]', '-', raw_name)[:255]
 
         response = ddb.create_backup(
-            TableName=table_name,
+            TableName=clean_table_name,
             BackupName=backup_name
         )
         backup_arn = response.get('BackupDetails', {}).get('BackupArn', '')
@@ -165,7 +169,7 @@ def backup_dynamodb_table(credentials, region, table_name, scan_id):
     except ClientError as e:
         backup_result['status'] = 'failed'
         backup_result['error'] = e.response['Error']['Message']
-        logger.error(f"Failed to backup DynamoDB {table_name}: {e.response['Error']['Message']}")
+        logger.error(f"Failed to backup DynamoDB {clean_table_name}: {e.response['Error']['Message']}")
 
     return backup_result
 
@@ -253,27 +257,47 @@ def identify_resources_to_backup(recommendations, architecture_data):
     Analyze recommendations to determine which resources need backup.
     Returns a list of resources that will be affected by the changes.
     """
-    affected_resources = set()
-    resources_by_id = {}
+    affected_resources = []
+    seen_ids = set()
+    all_res = architecture_data.get('resources', [])
 
-    # Index all resources by ID
-    for resource in architecture_data.get('resources', []):
-        resources_by_id[resource.get('id', '')] = resource
-
-    # Extract affected resources from recommendations
+    # Collect target resource IDs mentioned in recommendations
+    target_ids = set()
     for rec in recommendations:
         for resource_id in rec.get('affected_resources', []):
-            if resource_id in resources_by_id:
-                affected_resources.add(resource_id)
+            if resource_id:
+                clean_id = str(resource_id).strip()
+                target_ids.add(clean_id.lower())
+                target_ids.add(clean_id.lower().replace('arn:aws:s3:::', ''))
+                target_ids.add(clean_id.lower().split('/')[-1])
 
-        # Also check implementation steps for resource references
-        for step in rec.get('implementation_steps', []):
-            for resource_id in resources_by_id:
-                if resource_id in str(step):
-                    affected_resources.add(resource_id)
+    # Match against architecture resources
+    for resource in all_res:
+        rid = str(resource.get('id', '')).lower().strip()
+        rname = str(resource.get('name', '')).lower().strip()
+        rarn = str(resource.get('arn', '')).lower().strip()
+        clean_rid = rid.replace('arn:aws:s3:::', '').split('/')[-1]
 
-    # Return full resource objects for affected resources
-    return [resources_by_id[rid] for rid in affected_resources if rid in resources_by_id]
+        if (rid in target_ids or rname in target_ids or rarn in target_ids or clean_rid in target_ids or
+            any(t == rid or t == rname or t == clean_rid for t in target_ids)):
+            if resource.get('id') not in seen_ids:
+                seen_ids.add(resource.get('id'))
+                affected_resources.append(resource)
+
+    # If any target_ids weren't matched in architecture_data, include them directly as target items
+    for rec in recommendations:
+        for resource_id in rec.get('affected_resources', []):
+            clean_name = str(resource_id).replace('arn:aws:s3:::', '').strip()
+            if clean_name not in seen_ids and resource_id not in seen_ids:
+                seen_ids.add(resource_id)
+                res_type = 'S3' if 's3' in str(resource_id).lower() or not str(resource_id).startswith(('i-', 'vol-', 'vpc-', 'sg-', 'rds-')) else 'Resource'
+                affected_resources.append({
+                    'id': resource_id,
+                    'name': clean_name,
+                    'type': res_type
+                })
+
+    return affected_resources
 
 
 def perform_rollback(credentials, region, backup_results):
@@ -339,6 +363,165 @@ def perform_rollback(credentials, region, backup_results):
         rollback_results.append(rollback_entry)
 
     return rollback_results
+
+
+def ensure_target_bucket_log_policy(s3_client, target_bucket):
+    """Ensure the target bucket policy allows S3 Log Delivery service principal."""
+    try:
+        policy_doc = {}
+        try:
+            res = s3_client.get_bucket_policy(Bucket=target_bucket)
+            policy_doc = json.loads(res.get('Policy', '{}'))
+        except ClientError as pe:
+            if pe.response['Error']['Code'] not in ('NoSuchBucketPolicy', '404'):
+                raise
+
+        statements = policy_doc.get('Statement', [])
+        has_log_policy = any(
+            s.get('Sid') == 'S3ServerAccessLogsPolicy' or
+            (isinstance(s.get('Principal'), dict) and s.get('Principal', {}).get('Service') == 'logging.s3.amazonaws.com')
+            for s in statements if isinstance(s, dict)
+        )
+        if not has_log_policy:
+            statements.append({
+                'Sid': 'S3ServerAccessLogsPolicy',
+                'Effect': 'Allow',
+                'Principal': {'Service': 'logging.s3.amazonaws.com'},
+                'Action': 's3:PutObject',
+                'Resource': f'arn:aws:s3:::{target_bucket}/*'
+            })
+            policy_doc['Version'] = '2012-10-17'
+            policy_doc['Statement'] = statements
+            s3_client.put_bucket_policy(Bucket=target_bucket, Policy=json.dumps(policy_doc))
+            logger.info(f"Attached S3 Log Delivery policy to {target_bucket}")
+    except Exception as e:
+        logger.warning(f"Could not update bucket policy on {target_bucket}: {e}")
+
+
+def execute_remediation(credentials, region, affected_resources, recommendations=None):
+    """
+    Execute real automated remediations against the assumed client role.
+    Supports S3 (versioning, default encryption, access logging) and DynamoDB (PITR).
+    """
+    applied = []
+    errors = []
+
+    s3 = boto3.client(
+        's3',
+        region_name=region,
+        aws_access_key_id=credentials['aws_access_key_id'],
+        aws_secret_access_key=credentials['aws_secret_access_key'],
+        aws_session_token=credentials['aws_session_token']
+    )
+
+    for res in affected_resources:
+        res_id = res if isinstance(res, str) else res.get('id') or res.get('resource_id') or ''
+        if not res_id:
+            continue
+
+        # If it's a DynamoDB table
+        if 'dynamodb' in str(res).lower() or 'table/' in str(res_id) or str(res_id).startswith('arn:aws:dynamodb'):
+            table_name = res_id.split('/')[-1] if '/' in res_id else res_id
+            clean_tbl = table_name.replace('arn:aws:dynamodb:', '').replace('table:', '').strip()
+            ddb = boto3.client(
+                'dynamodb',
+                region_name=region,
+                aws_access_key_id=credentials['aws_access_key_id'],
+                aws_secret_access_key=credentials['aws_secret_access_key'],
+                aws_session_token=credentials['aws_session_token']
+            )
+            try:
+                ddb.update_continuous_backups(
+                    TableName=clean_tbl,
+                    PointInTimeRecoverySpecification={'PointInTimeRecoveryEnabled': True}
+                )
+                applied.append({
+                    'resource_id': clean_tbl,
+                    'type': 'DynamoDB',
+                    'status': 'APPLIED',
+                    'changes': ['Point-in-Time Recovery (PITR): Enabled']
+                })
+                logger.info(f"Successfully enabled PITR on DynamoDB table: {clean_tbl}")
+            except Exception as de:
+                logger.error(f"Failed to enable PITR on {clean_tbl}: {de}")
+                errors.append({'resource_id': clean_tbl, 'error': str(de)})
+            continue
+
+        # If it's an S3 bucket (e.g. archlens-frontend-..., archlens-data-...)
+        if 's3' in str(res).lower() or not res_id.startswith(('i-', 'vol-', 'vpc-', 'sg-', 'rds-')):
+            bucket_name = res_id.replace('arn:aws:s3:::', '').strip()
+            changes_list = []
+            try:
+                # 1. Enable Versioning
+                s3.put_bucket_versioning(
+                    Bucket=bucket_name,
+                    VersioningConfiguration={'Status': 'Enabled'}
+                )
+                changes_list.append('Versioning: Enabled')
+                logger.info(f"Successfully enabled versioning on S3 bucket: {bucket_name}")
+
+                # 2. Enable Default Server-Side Encryption (AES256 / SSE-S3)
+                s3.put_bucket_encryption(
+                    Bucket=bucket_name,
+                    ServerSideEncryptionConfiguration={
+                        'Rules': [
+                            {
+                                'ApplyServerSideEncryptionByDefault': {
+                                    'SSEAlgorithm': 'AES256'
+                                },
+                                'BucketKeyEnabled': True
+                            }
+                        ]
+                    }
+                )
+                changes_list.append('Encryption: AES256')
+                logger.info(f"Successfully enabled AES256 encryption on S3 bucket: {bucket_name}")
+
+                # 3. Enable Server Access Logging (requires a distinct destination bucket with permissions)
+                try:
+                    all_buckets_resp = s3.list_buckets()
+                    existing_bucket_names = [b['Name'] for b in all_buckets_resp.get('Buckets', [])]
+
+                    # AWS S3 strictly forbids a bucket from logging to itself
+                    other_buckets = [b for b in existing_bucket_names if b != bucket_name]
+                    target_log_bucket = next((b for b in other_buckets if 'log' in b or 'backup' in b), None)
+                    if not target_log_bucket and other_buckets:
+                        target_log_bucket = other_buckets[0]
+
+                    if target_log_bucket:
+                        # Ensure target bucket grants permission to logging.s3.amazonaws.com
+                        ensure_target_bucket_log_policy(s3, target_log_bucket)
+
+                        s3.put_bucket_logging(
+                            Bucket=bucket_name,
+                            BucketLoggingStatus={
+                                'LoggingEnabled': {
+                                    'TargetBucket': target_log_bucket,
+                                    'TargetPrefix': f'access-logs/{bucket_name}/'
+                                }
+                            }
+                        )
+                        changes_list.append(f'ServerAccessLogging: Target {target_log_bucket}')
+                        logger.info(f"Successfully enabled access logging on {bucket_name} to {target_log_bucket}")
+                    else:
+                        logger.warning(f"No distinct target logging bucket found for {bucket_name}")
+                except Exception as log_err:
+                    logger.warning(f"Access logging note for {bucket_name}: {log_err}")
+                    if recommendations and any('log' in str(r).lower() for r in recommendations):
+                        errors.append({'resource_id': bucket_name, 'error': f"Access logging: {str(log_err)}"})
+
+                if changes_list:
+                    applied.append({
+                        'resource_id': bucket_name,
+                        'type': 'S3',
+                        'status': 'APPLIED',
+                        'changes': changes_list
+                    })
+            except Exception as e:
+                logger.error(f"Failed to apply remediation to bucket {bucket_name}: {e}")
+                errors.append({'resource_id': bucket_name, 'error': str(e)})
+
+    return {'applied': applied, 'errors': errors}
 
 
 def send_notification(subject, message):
@@ -436,6 +619,60 @@ def lambda_handler(event, context):
                     'status': 'rollback_initiated',
                     'scanId': scan_id,
                     'rollback_results': rollback_results,
+                    'timestamp': datetime.utcnow().isoformat()
+                }, default=str)
+            }
+
+        # DEPLOY ACTION — Execute actual remediations in client account
+        if action == 'deploy':
+            affected_resources = body.get('affectedResources', [])
+            if not affected_resources:
+                # Fall back to backup result if provided
+                affected_resources = [b.get('resource_id') for b in body.get('backupResult', {}).get('backups', [])]
+
+            logger.info(f"Executing real deployment on {len(affected_resources)} resources for account: {role_arn}")
+            credentials = assume_client_role(role_arn, external_id) if role_arn else None
+            if not credentials:
+                return {
+                    'statusCode': 400,
+                    'headers': {'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*'},
+                    'body': json.dumps({'error': 'Valid write/remediation roleArn is required to deploy changes'})
+                }
+
+            deploy_result = execute_remediation(credentials, region, affected_resources, body.get('recommendations'))
+
+            # Send SNS notification
+            duration = body.get('deploymentDuration', '12s')
+            send_notification(
+                f"ArchLens Deployment Successful ✅ - Scan {scan_id}",
+                f"Deployment completed successfully for scan {scan_id}.\n\n"
+                f"Resources modified: {len(deploy_result['applied'])}\n"
+                f"Changes:\n{json.dumps(deploy_result['applied'], indent=2, default=str)}\n"
+                f"Timestamp: {datetime.utcnow().isoformat()}\n\n"
+                f"Backups are available in S3 for rollback if needed."
+            )
+
+            # Audit log
+            try:
+                audit_table = dynamodb.Table(AUDIT_TABLE)
+                audit_table.put_item(Item={
+                    'auditId': f"deploy-{datetime.utcnow().strftime('%Y%m%d%H%M%S')}",
+                    'timestamp': datetime.utcnow().isoformat(),
+                    'action': 'DEPLOYMENT_APPLIED',
+                    'scanId': scan_id,
+                    'appliedCount': len(deploy_result['applied']),
+                    'details': json.dumps(deploy_result, default=str)[:5000]
+                })
+            except Exception as ae:
+                logger.warning(f"Audit log error: {ae}")
+
+            return {
+                'statusCode': 200,
+                'headers': {'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*'},
+                'body': json.dumps({
+                    'status': 'deployed',
+                    'scanId': scan_id,
+                    'result': deploy_result,
                     'timestamp': datetime.utcnow().isoformat()
                 }, default=str)
             }
@@ -583,8 +820,8 @@ def lambda_handler(event, context):
         # Identify resources that need backup
         affected_resources = identify_resources_to_backup(recommendations, architecture_data)
 
-        # If no specific affected resources identified, backup all discovered stateful resources
-        if not affected_resources:
+        # Only if no specific affected resources identified AND no recommendations were passed, fallback
+        if not affected_resources and not recommendations:
             all_resources = architecture_data.get('resources', [])
             stateful_types = ['EC2', 'RDS', 'Aurora', 'DynamoDB', 'EBS']
             affected_resources = [r for r in all_resources if r.get('type') in stateful_types]

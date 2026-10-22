@@ -69,7 +69,6 @@ const ICON_FILES: Record<string, string> = {
   Config: 'arch-aws-config-64.svg',
   FSx: 'arch-amazon-fsx-64.svg',
   Batch: 'arch-aws-batch-64.svg',
-  AppRunner: 'arch-aws-app-runner-64.svg',
   EMR: 'arch-amazon-emr-64.svg',
   AppSync: 'arch-aws-appsync-64.svg',
   SystemsManager: 'arch-aws-systems-manager-64.svg',
@@ -124,6 +123,7 @@ const GROUP_ICON_FILES: Record<string, string> = {
   TierCompute: 'categories/compute-64.svg',
   TierDatabase: 'categories/database-64.svg',
   TierMessaging: 'categories/application-integration-64.svg',
+  SharedServices: 'categories/database-64.svg',
 };
 
 /**
