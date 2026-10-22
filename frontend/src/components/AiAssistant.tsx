@@ -120,7 +120,7 @@ export default function AiAssistant() {
             role: 'assistant',
             text: res.data.reply,
             timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
-            model: res.data.model_used || 'Amazon Nova Pro',
+            model: res.data.model_used || 'Amazon Bedrock AI',
           },
         ]);
       } else {
@@ -245,7 +245,7 @@ export default function AiAssistant() {
                 </p>
                 <p className="text-[10px] text-gray-400">
                   {scanResult
-                    ? `Context: ${scanResult.summary.total_resources} resources discovered`
+                    ? `Context: ${scanResult.summary?.total_resources ?? scanResult.resources?.length ?? 0} resources discovered`
                     : 'Ready for architecture Q&A'}
                 </p>
               </div>

@@ -3,6 +3,7 @@ import { useNavigate } from 'react-router-dom';
 import { useAppStore } from '../store/useAppStore';
 import { detectDrift, generateReport, manageSchedule } from '../services/api';
 import ComplianceDashboard from '../components/ComplianceDashboard';
+import { AWS_REGIONS } from '../config/aws-regions';
 import toast from 'react-hot-toast';
 import {
   ChartBarIcon,
@@ -127,6 +128,7 @@ export default function InsightHubPage() {
   const [schedDate, setSchedDate] = useState('');
   const [schedTime, setSchedTime] = useState('02:00');
   const [schedDay, setSchedDay] = useState('Monday');
+  const [schedRegion, setSchedRegion] = useState<string>(() => selectedRegion || 'ap-south-1');
   const [editingId, setEditingId] = useState<string | null>(null);
 
   // Auto-detect browser timezone
@@ -308,8 +310,8 @@ export default function InsightHubPage() {
         ...(editingId ? { scheduleId: editingId } : {}),
         accountId: scheduleAccountId,
         roleArn,
-        region: selectedRegion,
-        regions: selectedRegions.length ? selectedRegions : [selectedRegion],
+        region: schedRegion,
+        regions: [schedRegion],
         frequency: schedFreq,
         runAt,
         dailyTime,
@@ -635,6 +637,21 @@ export default function InsightHubPage() {
                 value={schedTime}
                 onChange={(e) => setSchedTime(e.target.value)}
               />
+            </div>
+
+            <div>
+              <label className="block text-xs text-gray-400 mb-1">AWS Region</label>
+              <select
+                className="select-field min-w-[210px]"
+                value={schedRegion}
+                onChange={(e) => setSchedRegion(e.target.value)}
+              >
+                {AWS_REGIONS.map((r) => (
+                  <option key={r.code} value={r.code}>
+                    {r.name} ({r.code})
+                  </option>
+                ))}
+              </select>
             </div>
 
             <div>

@@ -8,6 +8,7 @@ import json
 import boto3
 import os
 import logging
+import time
 from datetime import datetime
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from botocore.exceptions import ClientError, BotoCoreError
@@ -19,12 +20,29 @@ logger.setLevel(logging.INFO)
 # Initialize clients
 sts_client = boto3.client('sts')
 s3_client = boto3.client('s3')
+sqs_client = boto3.client('sqs')
 dynamodb = boto3.resource('dynamodb')
 
 # Configuration from environment variables
 DATA_BUCKET = os.environ.get('DATA_BUCKET', 'archlens-data')
 SCANS_TABLE = os.environ.get('SCANS_TABLE', 'archlens-scans')
+RELATIONSHIPS_TABLE = os.environ.get('RELATIONSHIPS_TABLE', 'archlens-relationships')
 SCAN_TIMEOUT_SECONDS = int(os.environ.get('SCAN_TIMEOUT_SECONDS', '3600'))
+DISCOVERY_QUEUE_URL = os.environ.get('DISCOVERY_QUEUE_URL', '')
+# Strictly use POLL_INTERVAL_SECONDS configured in Lambda environment variables (no fallback default)
+POLL_INTERVAL_SECONDS = int(os.environ['POLL_INTERVAL_SECONDS'])
+
+
+def _normalize_sqs_url(url_or_arn):
+    """Ensure SQS Queue URL is an HTTPS endpoint even if configured with ARN."""
+    if not url_or_arn:
+        return ''
+    raw = str(url_or_arn).strip()
+    if raw.startswith('arn:aws:sqs:'):
+        parts = raw.split(':')
+        if len(parts) >= 6:
+            return f"https://sqs.{parts[3]}.amazonaws.com/{parts[4]}/{parts[5]}"
+    return raw
 
 # Supported services for discovery
 SUPPORTED_SERVICES = [
@@ -112,7 +130,11 @@ def safe_discover(func, service_name, credentials, region):
             logger.error(f"Error discovering {service_name} in {region}: {e.response['Error']['Message']}")
         return []
     except Exception as e:
-        logger.error(f"Unexpected error discovering {service_name} in {region}: {str(e)}")
+        err_msg = str(e)
+        if 'Could not connect to the endpoint URL' in err_msg or 'EndpointConnectionError' in err_msg:
+            logger.info(f"{service_name} endpoint not available in {region}: skipped")
+        else:
+            logger.error(f"Unexpected error discovering {service_name} in {region}: {err_msg}")
         return []
 
 
@@ -1259,21 +1281,6 @@ def discover_batch(credentials, region):
     return resources
 
 
-def discover_apprunner(credentials, region):
-    """Discover App Runner services."""
-    resources = []
-    try:
-        ar = get_client('apprunner', credentials, region)
-        for svc in ar.list_services().get('ServiceSummaryList', []):
-            resources.append({
-                'type': 'AppRunner', 'id': svc.get('ServiceArn', ''),
-                'name': svc.get('ServiceName', ''), 'status': svc.get('Status', ''),
-                'region': region,
-            })
-    except ClientError:
-        pass
-    return resources
-
 
 def discover_emr(credentials, region):
     """Discover EMR clusters."""
@@ -1397,386 +1404,6 @@ def discover_backup_vaults(credentials, region):
         pass
     return resources
 
-
-def discover_all_resources_via_config(credentials, region, already_found_ids):
-    """
-    Catch-all discovery using AWS Config's advanced query + list APIs.
-    Unlike the Tagging API, AWS Config finds resources whether or not they are
-    TAGGED — so this guarantees untagged resources of ANY recorded service
-    still appear on the diagram. It ALSO returns AWS's native relationship
-    graph (what each resource connects to), giving real connections.
-
-    Returns (resources, relationships). Degrades gracefully if Config
-    isn't enabled in the client account.
-    """
-    resources = []
-    relationships = []
-
-    def _norm_id(rid):
-        """Normalize an id to match the caller's dedup keys (bare, lowercased)."""
-        if not rid:
-            return ''
-        s = str(rid)
-        if s.startswith('arn:'):
-            tail = s.split(':')[-1]
-            s = tail.split('/')[-1] if '/' in tail else tail
-        elif '/' in s:
-            s = s.split('/')[-1]
-        return s.lower()
-
-    try:
-        config = get_client('config', credentials, region)
-
-        # ── Strategy 1: SelectResourceConfig — a SQL-like query that returns
-        #    EVERY resource Config records, across ALL types, in one query.
-        #    This is the true "list everything" call (tagged or untagged).
-        try:
-            next_token = None
-            query = ("SELECT resourceId, resourceName, resourceType, "
-                     "availabilityZone, configuration, relationships")
-            while True:
-                params = {'Expression': query, 'Limit': 100}
-                if next_token:
-                    params['NextToken'] = next_token
-                resp = config.select_resource_config(**params)
-
-                for raw in resp.get('Results', []):
-                    try:
-                        item = json.loads(raw)
-                    except (json.JSONDecodeError, TypeError):
-                        continue
-
-                    rid = item.get('resourceId', '')
-                    if not rid or _norm_id(rid) in already_found_ids:
-                        continue
-
-                    res_type = item.get('resourceType', '')  # AWS::EC2::Instance
-                    parts = res_type.split('::')
-                    service = parts[1].lower() if len(parts) > 1 else 'unknown'
-                    raw_type = parts[2] if len(parts) > 2 else res_type
-                    display_type = _friendly_service_type(service, raw_type)
-
-                    # Skip services a dedicated scanner already covers, and
-                    # drop TIER-1 NOISE. Config counts sub-resources too, so
-                    # this prevents inflating parent-service counts.
-                    if _already_scanned_service(service, 'config'):
-                        continue
-                    if _is_noise_resource(service, raw_type, display_type, rid, item.get('resourceName')):
-                        continue
-
-                    resources.append({
-                        'type': display_type,
-                        'id': rid,
-                        'name': item.get('resourceName') or rid,
-                        'aws_service': service,
-                        'raw_resource_type': raw_type,
-                        'config_resource_type': res_type,
-                        'availability_zone': item.get('availabilityZone', ''),
-                        'region': region,
-                        'discovered_via': 'aws_config',
-                    })
-                    already_found_ids.add(_norm_id(rid))
-
-                    # Config's native relationship graph → real connections.
-                    for rel in item.get('relationships', []) or []:
-                        target_id = rel.get('resourceId', '')
-                        rel_name = rel.get('relationshipName', 'related_to')
-                        if target_id:
-                            relationships.append({
-                                'source': rid,
-                                'source_type': display_type,
-                                'target': target_id,
-                                'target_type': _friendly_service_type(
-                                    (rel.get('resourceType', '') or '').split('::')[1].lower()
-                                    if '::' in (rel.get('resourceType', '') or '') else 'unknown',
-                                    rel.get('resourceType', '')
-                                ),
-                                'relationship': rel_name.replace(' ', '_').lower(),
-                                'discovered_via': 'aws_config',
-                            })
-
-                next_token = resp.get('NextToken')
-                if not next_token:
-                    break
-            # If the advanced query worked, we have everything — return early.
-            if resources:
-                return resources, relationships
-        except ClientError:
-            pass  # advanced query not available — fall back to list per type
-
-        # ── Strategy 2 (fallback): list_discovered_resources per known type ──
-        for res_type in _config_resource_types():
-            try:
-                paginator = config.get_paginator('list_discovered_resources')
-                for page in paginator.paginate(resourceType=res_type):
-                    for item in page.get('resourceIdentifiers', []):
-                        rid = item.get('resourceId', '')
-                        rname = item.get('resourceName', '') or rid
-                        if not rid or _norm_id(rid) in already_found_ids:
-                            continue
-
-                        parts = res_type.split('::')
-                        service = parts[1].lower() if len(parts) > 1 else 'unknown'
-                        raw_type = parts[2] if len(parts) > 2 else res_type
-                        display_type = _friendly_service_type(service, raw_type)
-
-                        # Skip already-scanned services + TIER-1 NOISE.
-                        if _already_scanned_service(service, 'config'):
-                            continue
-                        if _is_noise_resource(service, raw_type, display_type, rid, rname):
-                            continue
-
-                        resources.append({
-                            'type': display_type,
-                            'id': rid,
-                            'name': rname,
-                            'aws_service': service,
-                            'raw_resource_type': raw_type,
-                            'config_resource_type': res_type,
-                            'region': region,
-                            'discovered_via': 'aws_config',
-                        })
-                        already_found_ids.add(_norm_id(rid))
-            except ClientError:
-                continue
-    except ClientError as e:
-        logger.info(f"AWS Config not accessible in {region}: {e.response['Error']['Code']}")
-    except Exception as e:
-        logger.info(f"AWS Config discovery skipped in {region}: {str(e)}")
-
-    return resources, relationships
-
-
-def _config_resource_types():
-    """Widely-used AWS Config resource types to enumerate for untagged coverage."""
-    return [
-        'AWS::EC2::Instance', 'AWS::EC2::Volume', 'AWS::EC2::SecurityGroup',
-        'AWS::EC2::VPC', 'AWS::EC2::Subnet', 'AWS::EC2::NatGateway',
-        'AWS::EC2::InternetGateway',
-        'AWS::S3::Bucket', 'AWS::RDS::DBInstance', 'AWS::RDS::DBCluster',
-        'AWS::Lambda::Function', 'AWS::DynamoDB::Table',
-        'AWS::ElasticLoadBalancingV2::LoadBalancer', 'AWS::ElasticLoadBalancing::LoadBalancer',
-        'AWS::CloudFront::Distribution', 'AWS::ApiGateway::RestApi', 'AWS::ApiGatewayV2::Api',
-        'AWS::ECS::Cluster', 'AWS::ECS::Service', 'AWS::EKS::Cluster',
-        'AWS::SNS::Topic', 'AWS::SQS::Queue', 'AWS::KMS::Key',
-        'AWS::ElastiCache::CacheCluster', 'AWS::EFS::FileSystem',
-        'AWS::Redshift::Cluster', 'AWS::Kinesis::Stream', 'AWS::SageMaker::NotebookInstance',
-        'AWS::CloudWatch::Alarm', 'AWS::StepFunctions::StateMachine',
-        'AWS::Route53::HostedZone', 'AWS::AutoScaling::AutoScalingGroup',
-        'AWS::SecretsManager::Secret', 'AWS::CloudTrail::Trail',
-        'AWS::ElasticBeanstalk::Environment', 'AWS::Glue::Job',
-        'AWS::WAFv2::WebACL', 'AWS::GuardDuty::Detector',
-    ]
-
-
-# ── Two-tier filtering ──────────────────────────────────────────────────────
-# TIER 1 — NOISE: auto-generated plumbing / ops artifacts that a client does
-# NOT think of as "resources" and that inflate the count so it no longer
-# matches the AWS Console. These are dropped from BOTH the inventory list and
-# the diagram (e.g. ENIs, AMIs, snapshots, key-pairs, log groups, CFN stacks).
-NOISE_ARN_SERVICES = {
-    'cloudformation',      # deployment tooling, not a resource
-    'logs',                # CloudWatch Logs log groups
-    'ssm',                 # parameters / documents / associations
-    'access-analyzer',
-    'organizations',
-    'sts',
-    'health',
-    'support',
-    'resource-groups', 'resource-explorer-2', 'resourceexplorer2', 'tag',
-    'servicecatalog',
-    'cost-explorer', 'ce', 'billing', 'budgets',
-    'servicediscovery',
-    'route53resolver',
-    'scheduler',
-    'appconfig',
-}
-NOISE_EC2_SUBTYPES = {
-    'network-interface', 'elastic-ip', 'eip', 'dhcp-options', 'key-pair',
-    'network-acl', 'image', 'snapshot', 'volume-attachment',
-    'prefix-list', 'spot-instance-request',
-}
-NOISE_DIAGRAM_TYPES = {
-    'NetworkInterface', 'AMI', 'Snapshot', 'KeyPair', 'ElasticIP',
-    'DHCPOptions', 'NetworkACL', 'CloudFormation', 'CloudWatchLogs',
-    'LogGroup', 'SSMParameter', 'SSMDocument',
-    # Unrecognized EC2-namespace sub-resources (launch templates, capacity
-    # reservations, spot/fleet requests, etc.) — not real compute instances,
-    # so they must never be counted as EC2 or shown as nodes.
-    'EC2Other', 'ResourceExplorer2', 'Route53Resolver', 'Scheduler', 'AppConfig', 'Cassandra',
-}
-
-# TIER 2 — INVENTORY-ONLY: real resources the client WANTS counted (so the
-# list matches the console) but that do NOT belong in a traffic-flow diagram
-# (identity, certificates, config recorders, etc.). Kept in the inventory,
-# hidden from the diagram by the frontend's NON_DIAGRAM_TYPES set.
-# (No backend action needed here — listed for documentation.)
-INVENTORY_ONLY_TYPES = {
-    'IAM', 'ACMCertificate', 'Config', 'RouteTable',
-}
-
-
-def _is_noise_resource(service, res_type, display_type, resource_id=None, resource_name=None):
-    """
-    True only for TIER-1 NOISE that should be dropped from the inventory AND
-    the diagram. Filters AWS-managed templates, internal keyspaces, and plumbing.
-    """
-    svc = (service or '').lower()
-    rt = (res_type or '').lower()
-    rid = str(resource_id or '').lower()
-    rname = str(resource_name or '').lower()
-
-    # Drop AWS default / internal managed artifacts
-    if 'codedeploydefault.' in rid or 'codedeploydefault.' in rname:
-        return True
-    if 'appconfig.' in rid or 'appconfig.' in rname:
-        return True
-    if svc in ('cassandra', 'keyspaces') and any(rid.startswith(s) for s in ('system', 'system_schema', 'system_schema_mcs', 'system_multiregion_info')):
-        return True
-    if 'rslvr-autodefined-' in rid or 'rslvr-autodefined-' in rname:
-        return True
-    if rid in ('fargate', 'fargate_spot') or rname in ('fargate', 'fargate_spot'):
-        return True
-    if rid.startswith('alias/aws/') or rname.startswith('alias/aws/'):
-        return True
-    if rid == 'default' and svc in ('scheduler', 'events', 'eventbridge'):
-        return True
-    if svc == 'athena' and rid == 'primary':
-        return True
-
-    if svc in NOISE_ARN_SERVICES:
-        return True
-    if svc == 'ec2' and rt in NOISE_EC2_SUBTYPES:
-        return True
-    if display_type in NOISE_DIAGRAM_TYPES:
-        return True
-    return False
-
-
-# Services that already have a DEDICATED, accurate scanner above. The catch-all
-# (Tagging API + AWS Config) must NOT re-add resources for these — otherwise
-# sub-resources (e.g. API Gateway stages/methods/keys, CodeDeploy deployment
-# groups, ELB listeners/target-groups) get counted as the parent service and
-# massively inflate the numbers (1 API Gateway → 20). The dedicated scanner is
-# the single source of truth for these service codes.
-SCANNED_ARN_SERVICES = {
-    'ec2',                     # EC2 + VPC + Subnet + SG + IGW + NAT (dedicated)
-    's3', 'rds', 'lambda', 'dynamodb',
-    'elasticloadbalancing', 'elasticloadbalancingv2',
-    'cloudfront', 'apigateway', 'apigatewayv2',
-    'ecs', 'eks', 'route53', 'sns', 'sqs', 'kms',
-    'elasticache', 'elasticfilesystem', 'redshift', 'kinesis',
-    'states', 'events', 'cloudwatch', 'autoscaling',
-    'secretsmanager', 'sagemaker', 'glue', 'athena', 'cloudtrail',
-    'elasticbeanstalk', 'neptune', 'rds-db', 'docdb', 'es', 'opensearch',
-    'guardduty', 'wafv2', 'fsx', 'batch', 'apprunner', 'elasticmapreduce',
-    'appsync', 'ssm', 'iam',   # iam has its own dedicated users/roles scanner
-    'config', 'securityhub',
-    'codedeploy', 'cognito', 'cognito-idp', 'cassandra', 'appconfig',
-    'route53resolver', 'resource-explorer-2', 'resourceexplorer2', 'scheduler',
-}
-# AWS::<Service>:: prefixes (from AWS Config) that map to the same dedicated
-# scanners — skip in the Config catch-all for the same reason.
-SCANNED_CONFIG_SERVICES = {
-    'ec2', 's3', 'rds', 'lambda', 'dynamodb', 'elasticloadbalancing',
-    'elasticloadbalancingv2', 'cloudfront', 'apigateway', 'apigatewayv2',
-    'ecs', 'eks', 'route53', 'sns', 'sqs', 'kms', 'elasticache', 'efs',
-    'redshift', 'kinesis', 'stepfunctions', 'events', 'cloudwatch',
-    'autoscaling', 'secretsmanager', 'sagemaker', 'glue', 'athena',
-    'cloudtrail', 'elasticbeanstalk', 'wafv2', 'guardduty', 'iam',
-    'config', 'securityhub',
-    'codedeploy', 'cognito', 'cognito-idp', 'cassandra', 'appconfig',
-    'route53resolver', 'resourceexplorer2', 'scheduler',
-}
-
-
-def _already_scanned_service(service, source):
-    """
-    True if a dedicated scanner already covers this service, so the catch-all
-    should skip it to avoid double/over-counting sub-resources.
-    `source` is 'tagging' (ARN service code) or 'config' (AWS::Service::).
-    """
-    svc = (service or '').lower()
-    if source == 'config':
-        return svc in SCANNED_CONFIG_SERVICES
-    return svc in SCANNED_ARN_SERVICES
-
-
-def discover_all_resources_via_tagging(credentials, region, already_found_arns):
-    """
-    Catch-all discovery using the Resource Groups Tagging API.
-    Returns EVERY resource in the region across ALL services (that supports
-    the tagging API), so we don't miss service types we don't have a
-    dedicated scanner for. Resources already found by detailed scanners
-    (matched by ARN/id) are skipped to avoid duplicates.
-
-    Any resource type without a dedicated scanner still appears on the diagram
-    with a generic icon and its raw AWS service/type label — never dropped.
-    """
-    def _norm_id(rid):
-        """Normalize an id/ARN to a bare, lowercased key for dedup."""
-        if not rid:
-            return ''
-        s = str(rid)
-        if s.startswith('arn:'):
-            tail = s.split(':')[-1]
-            s = tail.split('/')[-1] if '/' in tail else tail
-        elif '/' in s:
-            s = s.split('/')[-1]
-        return s.lower()
-
-    resources = []
-    try:
-        tagging = get_client('resourcegroupstaggingapi', credentials, region)
-        paginator = tagging.get_paginator('get_resources')
-        for page in paginator.paginate(ResourcesPerPage=100):
-            for item in page.get('ResourceTagMappingList', []):
-                arn = item.get('ResourceARN', '')
-                if not arn or _norm_id(arn) in already_found_arns:
-                    continue
-
-                # Parse the ARN to derive service + resource type + name.
-                # ARN format: arn:aws:<service>:<region>:<account>:<resourcetype>/<id>
-                parts = arn.split(':')
-                service = parts[2] if len(parts) > 2 else 'unknown'
-                resource_part = parts[5] if len(parts) > 5 else arn
-                if '/' in resource_part:
-                    res_type, res_name = resource_part.split('/', 1)
-                else:
-                    res_type = resource_part
-                    res_name = resource_part
-
-                tags = {t['Key']: t['Value'] for t in item.get('Tags', [])}
-                display_type = _friendly_service_type(service, res_type)
-
-                # Skip services that already have a dedicated scanner — the
-                # Tagging API returns their sub-resources too (API Gateway
-                # stages/methods/keys, ELB listeners, CodeDeploy groups, …),
-                # which would inflate the parent-service count. The dedicated
-                # scanner is the single source of truth for those.
-                if _already_scanned_service(service, 'tagging'):
-                    continue
-
-                # Drop TIER-1 NOISE (ENIs, AMIs, snapshots, log groups…).
-                if _is_noise_resource(service, res_type, display_type, arn, res_name):
-                    continue
-
-                resources.append({
-                    'type': display_type,
-                    'id': arn,
-                    'name': tags.get('Name', res_name),
-                    'aws_service': service,
-                    'raw_resource_type': res_type,
-                    'tags': tags,
-                    'region': region,
-                    'discovered_via': 'tagging_api',
-                })
-    except ClientError as e:
-        logger.info(f"Tagging API not accessible in {region}: {e.response['Error']['Code']}")
-    except Exception as e:
-        logger.info(f"Tagging API discovery skipped in {region}: {str(e)}")
-
-    return resources
 
 
 def _service_code_for_type(diagram_type):
@@ -1950,13 +1577,187 @@ def _friendly_service_type(service, res_type):
     return service.replace('-', ' ').title().replace(' ', '')
 
 
+# Set of service codes already covered by our 48 primary scanners
+PRIMARY_SCANNED_SERVICE_CODES = {
+    'ec2', 's3', 'rds', 'lambda', 'dynamodb', 'elasticloadbalancing',
+    'cloudfront', 'apigateway', 'ecs', 'eks', 'route53', 'sns', 'sqs',
+    'kms', 'elasticache', 'elasticfilesystem', 'redshift', 'kinesis',
+    'sagemaker', 'glue', 'athena', 'cloudtrail', 'cloudwatch', 'states',
+    'events', 'autoscaling', 'secretsmanager', 'elasticbeanstalk',
+    'neptune', 'documentdb', 'opensearch', 'guardduty', 'waf', 'wafv2',
+    'transitgateway', 'securityhub', 'config', 'fsx', 'batch', 
+    'emr', 'appsync', 'ssm', 'codedeploy', 'cognito-idp', 'backup', 'iam', 'codebuild'
+}
+
+
+# Mapping of common Cost Explorer service codes to standard AWS CloudFormation types
+SERVICE_CODE_TO_CLOUDFORMATION_TYPES = {
+    'mq': ['AWS::AmazonMQ::Broker'],
+    'kafka': ['AWS::MSK::Cluster'],
+    'msk': ['AWS::MSK::Cluster'],
+    'transfer': ['AWS::Transfer::Server'],
+    'appflow': ['AWS::AppFlow::Flow'],
+    'keyspaces': ['AWS::Cassandra::Keyspace'],
+    'codepipeline': ['AWS::CodePipeline::Pipeline'],
+    'codebuild': ['AWS::CodeBuild::Project'],
+    'dms': ['AWS::DMS::ReplicationInstance'],
+    'kinesisanalytics': ['AWS::KinesisAnalyticsV2::Application'],
+    'mwaa': ['AWS::MWAA::Environment'],
+    'lakeformation': ['AWS::LakeFormation::DataLakeSettings'],
+    'pipes': ['AWS::Pipes::Pipe'],
+    'scheduler': ['AWS::Scheduler::ScheduleGroup'],
+    'directconnect': ['AWS::DirectConnect::Connection'],
+    'globalaccelerator': ['AWS::GlobalAccelerator::Accelerator'],
+    'networkfirewall': ['AWS::NetworkFirewall::Firewall'],
+    'grafana': ['AWS::Grafana::Workspace'],
+    'databrew': ['AWS::DataBrew::Job'],
+    'kinesisvideo': ['AWS::KinesisVideo::Stream'],
+}
+
+
+def discover_via_cloudcontrol(credentials, region, type_name):
+    """
+    Use AWS Cloud Control API (universal, 100% read-only, free) to discover
+    resources for any AWS service dynamically without custom code.
+    """
+    resources = []
+    try:
+        cc = get_client('cloudcontrol', credentials, region)
+        paginator = cc.get_paginator('list_resources')
+        for page in paginator.paginate(TypeName=type_name):
+            for res_desc in page.get('ResourceDescriptions', []):
+                ident = res_desc.get('Identifier', '')
+                raw_props = res_desc.get('Properties', '{}')
+                props = {}
+                try:
+                    if isinstance(raw_props, str):
+                        props = json.loads(raw_props)
+                    elif isinstance(raw_props, dict):
+                        props = raw_props
+                except Exception:
+                    props = {}
+
+                res_name = (
+                    props.get('Name') or
+                    props.get('ClusterName') or
+                    props.get('BrokerName') or
+                    props.get('FlowName') or
+                    props.get('ServerId') or
+                    (ident.split('/')[-1] if '/' in ident else ident)
+                )
+                type_simple = type_name.split('::')[-1]
+                resources.append({
+                    'type': type_simple,
+                    'id': ident,
+                    'name': str(res_name),
+                    'region': region,
+                    'status': props.get('State') or props.get('Status') or 'ACTIVE',
+                    'properties': props,
+                    'discovered_via': 'cloudcontrol'
+                })
+    except ClientError as e:
+        logger.info(f"Cloud Control query for {type_name} in {region} skipped: {e.response['Error']['Code']}")
+    except Exception as e:
+        logger.info(f"Cloud Control query for {type_name} in {region} returned empty: {e}")
+    return resources
+
+
+def _is_noise_resource(aws_service='', raw_resource_type='', r_type='', r_id='', r_name=''):
+    """Filter out non-architectural billing line items (Tax, Cost Explorer, refunds),
+    or blank empty resource entries."""
+    service_str = str(aws_service or '').strip().lower()
+    raw_str = str(raw_resource_type or '').strip().lower()
+    type_str = str(r_type or '').strip().lower()
+    id_str = str(r_id or '').strip().lower()
+    name_str = str(r_name or '').strip().lower()
+
+    if not id_str and not name_str and not service_str:
+        return True
+
+    noise_keywords = (
+        'tax', 'cost explorer', 'aws cost explorer', 'billing',
+        'aws marketplace', 'refund', 'credit', 'invoice', 'payment'
+    )
+    for kw in noise_keywords:
+        if kw in service_str or kw in raw_str or kw in type_str:
+            return True
+
+    return False
+
+
+def _inspect_extra_services(services_footprint, credentials, scan_regions, active_regions=None, primary_region=None):
+    """
+    Check Cost Explorer active services. If any active billable service is NOT
+    among our 48 primary scanners, automatically inspect it using AWS Cloud Control API.
+    If resources were deleted or don't exist, safely returns empty without failing.
+    Targets only active regions or primary region, and executes concurrently with a strict timeout.
+    """
+    extra_found = []
+    if not services_footprint:
+        return extra_found
+
+    # Target only regions where active resources were detected, or fall back to primary region
+    if active_regions:
+        target_regions = [r for r in scan_regions if r in active_regions]
+    else:
+        target_regions = []
+
+    if not target_regions:
+        target_regions = [primary_region] if (primary_region and primary_region != 'all') else (scan_regions[:1] if scan_regions else ['us-east-1'])
+
+    cloudcontrol_tasks = []
+    for svc_item in services_footprint:
+        svc_display = svc_item.get('service', '')
+        svc_code = _cost_explorer_name_to_code(svc_display)
+        if not svc_code or svc_code in PRIMARY_SCANNED_SERVICE_CODES:
+            continue
+
+        # Skip billing noise like Tax, Marketplace, Refunds
+        if _is_noise_resource(aws_service=svc_display, raw_resource_type=svc_code):
+            continue
+
+        logger.info(f"Cost Explorer identified extra active service: {svc_display} (code: {svc_code})")
+
+        cfn_types = SERVICE_CODE_TO_CLOUDFORMATION_TYPES.get(svc_code)
+        if not cfn_types:
+            svc_clean = svc_code.replace('-', ' ').title().replace(' ', '')
+            cfn_types = [f"AWS::{svc_clean}::Instance", f"AWS::{svc_clean}::Cluster"]
+
+        for region in target_regions:
+            for type_name in cfn_types:
+                cloudcontrol_tasks.append((region, type_name))
+
+    if not cloudcontrol_tasks:
+        return extra_found
+
+    # Run Cloud Control discovery concurrently with a 2.5-second timeout budget
+    try:
+        with ThreadPoolExecutor(max_workers=min(len(cloudcontrol_tasks), 10)) as pool:
+            futures = [
+                pool.submit(discover_via_cloudcontrol, credentials, reg, tname)
+                for reg, tname in cloudcontrol_tasks
+            ]
+            for fut in as_completed(futures, timeout=2.5):
+                try:
+                    found = fut.result()
+                    if found:
+                        extra_found.extend(found)
+                        logger.info(f"Cloud Control discovered {len(found)} extra resources")
+                except Exception as cce:
+                    logger.debug(f"Cloud Control query failed: {cce}")
+    except Exception as e:
+        logger.warning(f"Cloud Control batch query skipped due to timeout or error: {e}")
+
+    return extra_found
+
+
 def discover_services_from_cost_explorer(credentials):
     """
     Query Cost Explorer to find WHICH services the client actually uses
     (matches their billing exactly — catches services even if untagged).
     Cost Explorer is global; returns a set of AWS service names with cost.
-    Used only to report the full service footprint — detailed/tagging scans
-    still fetch the actual resources.
+    Used to report full service footprint and drive Cloud Control API discovery
+    for active services beyond the 48 core scanners.
     """
     services = []
     try:
@@ -2084,7 +1885,7 @@ def build_relationships(resources):
     return relationships
 
 
-def _run_discovery(body):
+def _run_discovery(body, context=None):
     """
     Execute the full multi-region discovery and return the discovery_result dict.
     Raises on unrecoverable errors so callers can mark the scan record failed.
@@ -2095,6 +1896,7 @@ def _run_discovery(body):
         primary_region = body.get('region')
         account_id = body.get('accountId', '')
         external_id = body.get('externalId')
+        user_email = body.get('userEmail') or body.get('email', '')
         # scan_regions: use explicit list if provided, else the single selected region.
         scan_regions = body.get('regions') or ([primary_region] if primary_region else [])
 
@@ -2111,6 +1913,16 @@ def _run_discovery(body):
                 account_id = role_arn.split(':')[4]
             except IndexError:
                 account_id = 'unknown'
+
+        scan_start_time = time.time()
+        # Dynamic discovery deadline derived from AWS Lambda runtime context or SCAN_TIMEOUT_SECONDS env var
+        if context and hasattr(context, 'get_remaining_time_in_millis'):
+            rem_ms = context.get_remaining_time_in_millis()
+            # Reserve 15s buffer for DynamoDB update, S3 payload write, and relationship graph generation
+            DISCOVERY_TIMEOUT = max(1.0, (rem_ms / 1000.0) - 15.0)
+        else:
+            DISCOVERY_TIMEOUT = float(SCAN_TIMEOUT_SECONDS)
+        logger.info(f"Discovery timeout budget set to {DISCOVERY_TIMEOUT:.1f}s (regions: {len(scan_regions)})")
 
         # Assume client role
         credentials = assume_client_role(role_arn, external_id)
@@ -2132,14 +1944,10 @@ def _run_discovery(body):
 
         # Discover resources across all specified regions
         all_resources = []
-        discovery_errors = []
+        active_regions = set()
         logger.info(f"Scanning {len(scan_regions)} region(s): {scan_regions}")
 
         # ── Parallel per-region scan ─────────────────────────────────────────
-        # Each region runs ~40 describe/list calls. Doing regions sequentially
-        # makes all-regions scans exceed the API Gateway 29s limit. We scan all
-        # regions concurrently (I/O-bound → threads help a lot) so a full
-        # all-regions scan has a chance to finish inside the sync window.
         def _scan_one_region(region):
             found = []
             # Core detailed scanners.
@@ -2183,7 +1991,6 @@ def _run_discovery(body):
             found.extend(safe_discover(discover_config, 'Config', credentials, region))
             found.extend(safe_discover(discover_fsx, 'FSx', credentials, region))
             found.extend(safe_discover(discover_batch, 'Batch', credentials, region))
-            found.extend(safe_discover(discover_apprunner, 'AppRunner', credentials, region))
             found.extend(safe_discover(discover_emr, 'EMR', credentials, region))
             found.extend(safe_discover(discover_appsync, 'AppSync', credentials, region))
             found.extend(safe_discover(discover_ssm, 'SystemsManager', credentials, region))
@@ -2193,84 +2000,82 @@ def _run_discovery(body):
             found.extend(safe_discover(discover_backup_vaults, 'BackupVault', credentials, region))
             return found
 
-        max_workers = min(len(scan_regions), 12) or 1
-        with ThreadPoolExecutor(max_workers=max_workers) as pool:
-            futures = {pool.submit(_scan_one_region, r): r for r in scan_regions}
-            for fut in as_completed(futures):
-                try:
-                    all_resources.extend(fut.result())
-                except Exception as e:
-                    logger.error(f"Region scan failed for {futures[fut]}: {e}")
+        # Sizing worker pool so all regions run simultaneously
+        max_workers = min(len(scan_regions), 25) or 1
+        with ThreadPoolExecutor(max_workers=max_workers + 6) as pool:
+            # 1. Launch regional scans
+            region_futures = {pool.submit(_scan_one_region, r): r for r in scan_regions}
 
-        # Global / Account-wide services - only scan once.
-        all_resources.extend(safe_discover(discover_cloudfront, 'CloudFront', credentials, 'us-east-1'))
-        all_resources.extend(safe_discover(discover_route53, 'Route53', credentials, 'us-east-1'))
-        all_resources.extend(safe_discover(discover_iam, 'IAM', credentials, 'us-east-1'))
-        all_resources.extend(safe_discover(discover_s3, 'S3', credentials, primary_region or 'us-east-1'))
+            # 2. Concurrently launch global services & cost explorer
+            cf_future = pool.submit(safe_discover, discover_cloudfront, 'CloudFront', credentials, 'us-east-1')
+            r53_future = pool.submit(safe_discover, discover_route53, 'Route53', credentials, 'us-east-1')
+            iam_future = pool.submit(safe_discover, discover_iam, 'IAM', credentials, 'us-east-1')
+            s3_future = pool.submit(safe_discover, discover_s3, 'S3', credentials, primary_region if primary_region != 'all' else 'us-east-1')
+            ce_future = pool.submit(discover_services_from_cost_explorer, credentials)
+            trend_future = pool.submit(discover_cost_trend, credentials)
 
-        # ── Safety-net catch-alls so NOTHING is missed (tagged or untagged) ──
-        # Dedup by a NORMALIZED key so the same resource discovered by different
-        # sources (detailed scanner = bare id like "vpc-123", tagging API = full
-        # ARN "...:vpc/vpc-123", Config = "vpc-123") is only counted ONCE.
-        def _dedup_key(resource_id):
-            if not resource_id:
-                return ''
-            rid = str(resource_id)
-            # If it's an ARN, take the last path/colon segment (the bare id).
-            if rid.startswith('arn:'):
-                tail = rid.split(':')[-1]
-                if '/' in tail:
-                    tail = tail.split('/')[-1]
-                return tail.lower()
-            if '/' in rid:
-                return rid.split('/')[-1].lower()
-            return rid.lower()
-
-        already_found_arns = {_dedup_key(r.get('id', '')) for r in all_resources}
-        config_relationships = []  # real relationships from AWS Config (if enabled)
-
-        # Catch-all discovery (Tagging API + AWS Config) runs per region and is
-        # I/O-bound, so parallelize it too. Each worker returns its findings;
-        # dedup happens sequentially afterwards to keep the shared set correct.
-        def _catchall_one_region(region):
-            snapshot = set(already_found_arns)
-            tagged = safe_discover(
-                lambda creds, reg: discover_all_resources_via_tagging(creds, reg, snapshot),
-                'TaggingAPI', credentials, region
-            ) or []
-            cfg_found, cfg_rels = [], []
+            # 3. Gather regional results with remaining time budget
+            elapsed = time.time() - scan_start_time
+            time_left = max(1.0, DISCOVERY_TIMEOUT - elapsed)
             try:
-                cfg_found, cfg_rels = discover_all_resources_via_config(
-                    credentials, region, snapshot
-                )
-            except Exception as e:
-                logger.info(f"AWS Config discovery skipped in {region}: {str(e)}")
-            return tagged, cfg_found, cfg_rels
+                for fut in as_completed(region_futures, timeout=time_left):
+                    reg = region_futures[fut]
+                    try:
+                        res = fut.result()
+                        if res:
+                            all_resources.extend(res)
+                            active_regions.add(reg)
+                    except Exception as e:
+                        logger.error(f"Region scan failed for {reg}: {e}")
+            except Exception as te:
+                logger.warning(f"Regional discovery hit time budget limit ({DISCOVERY_TIMEOUT}s): {te}")
 
-        with ThreadPoolExecutor(max_workers=min(len(scan_regions), 12) or 1) as pool:
-            futures = {pool.submit(_catchall_one_region, r): r for r in scan_regions}
-            for fut in as_completed(futures):
+            # Collect any regional futures that finished or are done (prevents losing results if any thread finished slightly late)
+            for fut, reg in region_futures.items():
+                if reg not in active_regions and fut.done() and not fut.cancelled():
+                    try:
+                        res = fut.result()
+                        if res:
+                            all_resources.extend(res)
+                            active_regions.add(reg)
+                            logger.info(f"Gathered late completed resources for region {reg}: {len(res)} resources")
+                    except Exception as e:
+                        logger.warning(f"Error reading completed regional future for {reg}: {e}")
+
+            # 4. Gather global results
+            for g_name, g_fut in [('CloudFront', cf_future), ('Route53', r53_future), ('IAM', iam_future), ('S3', s3_future)]:
                 try:
-                    tagged, cfg_found, cfg_rels = fut.result()
-                except Exception as e:
-                    logger.error(f"Catch-all scan failed for {futures[fut]}: {e}")
-                    continue
-                for r in tagged:
-                    key = _dedup_key(r.get('id'))
-                    if key and key not in already_found_arns:
-                        all_resources.append(r)
-                        already_found_arns.add(key)
-                for r in cfg_found:
-                    key = _dedup_key(r.get('id'))
-                    if key and key not in already_found_arns:
-                        all_resources.append(r)
-                        already_found_arns.add(key)
-                config_relationships.extend(cfg_rels)
+                    res = g_fut.result(timeout=2.0)
+                    if res:
+                        all_resources.extend(res)
+                except Exception as ge:
+                    logger.warning(f"Global service {g_name} skipped: {ge}")
 
-        # ── Cost Explorer: full service footprint (matches billing) ──────────
-        services_footprint = discover_services_from_cost_explorer(credentials)
-        # ── Cost Explorer: 90-day monthly trend (SOW 4.1 cost trend widget) ──
-        cost_trend = discover_cost_trend(credentials)
+            # 5. Gather cost explorer results
+            try:
+                services_footprint = ce_future.result(timeout=2.0) or []
+            except Exception:
+                services_footprint = []
+
+            try:
+                cost_trend = trend_future.result(timeout=2.0) or []
+            except Exception:
+                cost_trend = []
+
+        # 6. Extra services via CloudControl: only inspect active regions within remaining budget
+        if (time.time() - scan_start_time) < (DISCOVERY_TIMEOUT + 1.0):
+            extra_resources = _inspect_extra_services(
+                services_footprint,
+                credentials,
+                scan_regions,
+                active_regions=active_regions,
+                primary_region=primary_region
+            )
+            if extra_resources:
+                all_resources.extend(extra_resources)
+                logger.info(f"Discovered {len(extra_resources)} extra resources from Cost Explorer services")
+
+        config_relationships = []
 
         # NOTE: We intentionally DO NOT add "billed-but-not-discovered" services
         # as resource nodes. The inventory must reflect ONLY resources that were
@@ -2281,13 +2086,10 @@ def _run_discovery(body):
         # with counts even when no such resource existed — that is removed.)
 
         # ── FINAL DEDUP PASS ─────────────────────────────────────────────────
-        # Guarantee each real resource appears ONCE, regardless of how many
-        # scanners found it (detailed + tagging + Config). We key by
-        # (normalized-id, type) so, e.g., the same VPC found as "vpc-123",
-        # "arn:...:vpc/vpc-123", and Config "vpc-123" collapses to one — while
-        # genuinely different resources (2 real VPCs) are still counted
-        # separately. Prefer the richest record (detailed scanner over ARN-only
-        # tagging/Config entries).
+        # Guarantee each real resource appears ONCE, regardless of scanner path.
+        # We key by (normalized-id, type) so, e.g., the same VPC found as "vpc-123"
+        # and "arn:...:vpc/vpc-123" collapses to one — while genuinely different
+        # resources (2 real VPCs) are still counted separately.
         def _canonical_key(r):
             rid = str(r.get('id', ''))
             if rid.startswith('arn:'):
@@ -2300,10 +2102,10 @@ def _run_discovery(body):
             return (bare.lower(), r.get('type', ''))
 
         def _richness(r):
-            # A detailed-scanner record (no 'discovered_via') is richest; then
-            # Config; then tagging; then billing-only.
+            # A detailed primary scanner record (no 'discovered_via') is richest;
+            # then Cloud Control; then billing-only.
             via = r.get('discovered_via', '')
-            return {'': 3, 'aws_config': 2, 'iam': 3, 'tagging_api': 1, 'cost_explorer': 0}.get(via, 1)
+            return {'': 3, 'iam': 3, 'cloudcontrol': 2, 'cost_explorer': 0}.get(via, 1)
 
         _deduped = {}
         for r in all_resources:
@@ -2402,9 +2204,10 @@ def _run_discovery(body):
 
         # Save metadata to DynamoDB
         table = dynamodb.Table(SCANS_TABLE)
-        table.put_item(Item={
+        scan_meta = {
             'scanId': scan_id,
             'accountId': account_id,
+            'roleArn': role_arn,
             'regions': scan_regions,
             'timestamp': datetime.utcnow().isoformat(),
             'resourceCount': len(all_resources),
@@ -2412,7 +2215,89 @@ def _run_discovery(body):
             'status': 'completed',
             's3Key': f"scan-results/{scan_id}.json",
             'summary': json.dumps(summary_by_type)
-        })
+        }
+        if user_email:
+            scan_meta['userEmail'] = str(user_email).strip().lower()
+        table.put_item(Item=scan_meta)
+
+        # Save Adjacency Graph to RELATIONSHIPS_TABLE (SOW Section 6 & 8.1 Data Layer)
+        if RELATIONSHIPS_TABLE:
+            try:
+                rel_table = dynamodb.Table(RELATIONSHIPS_TABLE)
+                items_by_key = {}
+
+                # 1. Parent-child container nodes
+                for r in all_resources:
+                    rid = str(r.get('id') or r.get('name') or '').strip()
+                    rtype = str(r.get('type') or '').strip()
+                    if not rid or not rtype:
+                        continue
+                    vpc_id = str(r.get('vpc_id') or '').strip()
+                    subnet_id = str(r.get('subnet_id') or '').strip()
+                    region = str(r.get('region') or primary_region or 'ap-south-1')
+
+                    # Subnet belongs to VPC
+                    if rtype == 'Subnet' and vpc_id:
+                        pk = f"SCAN#{scan_id}#VPC#{vpc_id}"
+                        sk = f"SUBNET#{rid}"
+                        items_by_key[(pk, sk)] = {
+                            'PK': pk,
+                            'SK': sk,
+                            'resourceId': rid,
+                            'type': rtype,
+                            'name': r.get('name', rid),
+                            'region': region,
+                            'cidr': r.get('cidr', '')
+                        }
+                    # Resource inside Subnet
+                    elif subnet_id:
+                        pk = f"SCAN#{scan_id}#SUBNET#{subnet_id}"
+                        sk = f"RES#{rid}"
+                        items_by_key[(pk, sk)] = {
+                            'PK': pk,
+                            'SK': sk,
+                            'resourceId': rid,
+                            'type': rtype,
+                            'name': r.get('name', rid),
+                            'vpc_id': vpc_id,
+                            'region': region
+                        }
+                    # Regional standalone / shared service (S3, DynamoDB, Bedrock, etc.)
+                    elif not vpc_id and not subnet_id:
+                        pk = f"SCAN#{scan_id}#SHARED"
+                        sk = f"{rtype}#{rid}"
+                        items_by_key[(pk, sk)] = {
+                            'PK': pk,
+                            'SK': sk,
+                            'resourceId': rid,
+                            'type': rtype,
+                            'name': r.get('name', rid),
+                            'region': region
+                        }
+
+                # 2. Explicit connection edges (relationships)
+                for rel in relationships:
+                    src = str(rel.get('source', '')).strip()
+                    tgt = str(rel.get('target', '')).strip()
+                    rtype_rel = str(rel.get('relationship', 'ConnectsTo')).strip()
+                    if src and tgt:
+                        pk = f"SCAN#{scan_id}#EDGE#{src}"
+                        sk = f"TARGET#{tgt}"
+                        items_by_key[(pk, sk)] = {
+                            'PK': pk,
+                            'SK': sk,
+                            'source': src,
+                            'target': tgt,
+                            'relationship': rtype_rel
+                        }
+
+                with rel_table.batch_writer() as batch:
+                    for item in items_by_key.values():
+                        batch.put_item(Item=item)
+
+                logger.info(f"Successfully wrote adjacency list ({len(items_by_key)} items) to {RELATIONSHIPS_TABLE} for scan {scan_id}")
+            except Exception as ge:
+                logger.warning(f"Could not write adjacency graph to {RELATIONSHIPS_TABLE}: {ge}")
 
         logger.info(f"Discovery complete: {len(all_resources)} resources, {len(relationships)} relationships")
 
@@ -2437,12 +2322,22 @@ def _err(status, message):
 
 def lambda_handler(event, context):
     """
-    Synchronous resource discovery.
-    Input: { roleArn, region, accountId?, externalId?, regions? }
-    Runs all requested regions and returns the full inventory. If it cannot
-    finish within the API Gateway 29s limit it fails — there is no background job.
+    Resource discovery Lambda.
+    Supports asynchronous SQS event execution as well as API Gateway HTTP requests.
     """
     try:
+        # 1. Background execution triggered by SQS
+        if 'Records' in event:
+            logger.info(f"Processing {len(event['Records'])} SQS discovery job(s)")
+            for record in event['Records']:
+                try:
+                    payload = json.loads(record.get('body', '{}'))
+                    payload['_is_sqs'] = True
+                    _run_discovery(payload, context=context)
+                except Exception as sqs_rec_err:
+                    logger.error(f"Error processing SQS discovery record: {sqs_rec_err}")
+            return {'statusCode': 200, 'body': json.dumps({'message': 'SQS discovery batch processed'})}
+
         if isinstance(event.get('body'), str):
             body = json.loads(event['body'])
         elif isinstance(event.get('body'), dict):
@@ -2453,8 +2348,19 @@ def lambda_handler(event, context):
         action = body.get('action')
         if action == 'list_scans':
             account_id = body.get('accountId')
+            user_email = (body.get('userEmail') or body.get('email') or '').strip().lower()
             table = dynamodb.Table(SCANS_TABLE)
-            if account_id:
+            if user_email and account_id:
+                resp = table.scan(
+                    FilterExpression='accountId = :a AND userEmail = :u',
+                    ExpressionAttributeValues={':a': str(account_id), ':u': user_email}
+                )
+            elif user_email:
+                resp = table.scan(
+                    FilterExpression='userEmail = :u',
+                    ExpressionAttributeValues={':u': user_email}
+                )
+            elif account_id:
                 resp = table.scan(
                     FilterExpression='accountId = :a',
                     ExpressionAttributeValues={':a': str(account_id)}
@@ -2466,7 +2372,7 @@ def lambda_handler(event, context):
             return {
                 'statusCode': 200,
                 'headers': _cors(),
-                'body': json.dumps({'scans': items, 'count': len(items)}, default=str)
+                'body': json.dumps({'scans': items[:50], 'count': len(items[:50])}, default=str)
             }
 
         if action == 'get_scan_status':
@@ -2519,17 +2425,70 @@ def lambda_handler(event, context):
                 'body': json.dumps({'message': f'Scan {scan_id} deleted successfully'})
             }
 
-        # Synchronous discovery only. If a scan (e.g. all-regions) cannot finish
-        # within the API Gateway 29s hard limit, it fails cleanly and the UI
-        # shows "Scan failed" — there is no background job.
         if not body.get('roleArn'):
             return _err(400, 'roleArn is required')
         regions = body.get('regions') or ([body.get('region')] if body.get('region') else [])
         if not regions:
             return _err(400, 'region is required — please select a region when connecting the account')
 
+        role_arn = body.get('roleArn')
+        account_id = body.get('accountId')
+        if not account_id:
+            try:
+                account_id = role_arn.split(':')[4]
+            except Exception:
+                account_id = 'unknown'
+
+        queue_url = _normalize_sqs_url(DISCOVERY_QUEUE_URL)
+        # If SQS queue is configured and this is an HTTP request from API Gateway:
+        # Enqueue job to SQS and return HTTP 200 in 0.05 seconds!
+        if queue_url and not body.get('isSync'):
+            scan_id = body.get('scanId') or f"scan-{account_id}-{datetime.utcnow().strftime('%Y%m%d%H%M%S')}"
+            body['scanId'] = scan_id
+            body['accountId'] = account_id
+
+            # Save initial 'in_progress' record in DynamoDB so status polling works immediately
+            try:
+                table = dynamodb.Table(SCANS_TABLE)
+                scan_meta = {
+                    'scanId': scan_id,
+                    'accountId': account_id,
+                    'roleArn': role_arn,
+                    'regions': regions,
+                    'timestamp': datetime.utcnow().isoformat(),
+                    'status': 'in_progress',
+                    'resourceCount': 0,
+                    'relationshipCount': 0,
+                }
+                user_email = (body.get('userEmail') or body.get('email') or '').strip().lower()
+                if user_email:
+                    scan_meta['userEmail'] = user_email
+                table.put_item(Item=scan_meta)
+            except Exception as ddb_err:
+                logger.warning(f"Could not write initial in_progress scan to DynamoDB: {ddb_err}")
+
+            try:
+                sqs_client.send_message(
+                    QueueUrl=queue_url,
+                    MessageBody=json.dumps(body)
+                )
+                logger.info(f"Queued discovery scan {scan_id} to SQS {queue_url}")
+                return {
+                    'statusCode': 200,
+                    'headers': _cors(),
+                    'body': json.dumps({
+                        'status': 'in_progress',
+                        'scanId': scan_id,
+                        'accountId': account_id,
+                        'message': 'Discovery job queued successfully via SQS',
+                        'pollIntervalSeconds': POLL_INTERVAL_SECONDS
+                    })
+                }
+            except Exception as sqs_err:
+                logger.error(f"Failed to queue discovery to SQS: {sqs_err}. Falling back to direct execution.")
+
         try:
-            result = _run_discovery(body)
+            result = _run_discovery(body, context=context)
         except ValueError as ve:
             return _err(400, str(ve))
         return {'statusCode': 200, 'headers': _cors(), 'body': json.dumps(result, default=str)}

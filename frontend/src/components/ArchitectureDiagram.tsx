@@ -11,6 +11,7 @@ import ReactFlow, {
   MarkerType,
   Position,
   Panel,
+  Handle,
 } from 'reactflow';
 import 'reactflow/dist/style.css';
 // elkjs ships its own types; the bundled entry has no declaration, so silence TS.
@@ -46,6 +47,9 @@ interface Resource {
   map_public_ip?: boolean;
   is_public?: boolean;
   subnet_tier?: string;
+  cidr_block?: string;
+  account_id?: string;
+  account?: string;
   isRecommended?: boolean;
   [key: string]: unknown;
 }
@@ -65,6 +69,137 @@ interface ArchitectureDiagramProps {
   viewMode?: DiagramViewMode;
   accountId?: string;
 }
+
+// ─── Short code generator for branded AWS badge fallback ──────────────────────
+
+function getServiceShortCode(type: string): string {
+  const map: Record<string, string> = {
+    EC2: 'EC2',
+    Lambda: 'λ',
+    S3: 'S3',
+    RDS: 'RDS',
+    Aurora: 'AUR',
+    DynamoDB: 'DDB',
+    VPC: 'VPC',
+    CloudFront: 'CF',
+    ELB: 'ALB',
+    APIGateway: 'API',
+    ECS: 'ECS',
+    EKS: 'EKS',
+    Route53: 'R53',
+    SNS: 'SNS',
+    SQS: 'SQS',
+    KMS: 'KMS',
+    CloudWatch: 'CW',
+    IAM: 'IAM',
+    Cognito: 'COG',
+    StepFunctions: 'SFN',
+    Bedrock: 'AI',
+    EventBridge: 'EB',
+    ElastiCache: 'RED',
+    EFS: 'EFS',
+    EBS: 'EBS',
+    Redshift: 'RS',
+    Kinesis: 'KIN',
+    SageMaker: 'SM',
+    Glue: 'GLUE',
+    Athena: 'ATH',
+    CloudTrail: 'CT',
+    SecretsManager: 'SEC',
+    AutoScaling: 'ASG',
+    SecurityGroup: 'SG',
+    Subnet: 'SUB',
+    InternetGateway: 'IGW',
+    NATGateway: 'NAT',
+    VPCEndpoint: 'VPE',
+    OpenSearch: 'OS',
+    WAF: 'WAF',
+    TransitGateway: 'TGW',
+    SecurityHub: 'SH',
+  };
+  return map[type] || (type.length <= 4 ? type.toUpperCase() : type.slice(0, 3).toUpperCase());
+}
+
+// ─── AWS Service Icon with Text Badge Fallback ─────────────────────────────────
+
+const AwsServiceIcon: React.FC<{
+  type: string;
+  iconPath?: string;
+  color: string;
+  isDark: boolean;
+}> = ({ type, iconPath, color, isDark }) => {
+  const [hasError, setHasError] = useState(!iconPath);
+
+  if (hasError || !iconPath) {
+    const shortCode = getServiceShortCode(type);
+    return (
+      <div
+        style={{
+          width: '36px',
+          height: '36px',
+          margin: '0 auto',
+          borderRadius: '8px',
+          backgroundColor: isDark ? `${color}25` : `${color}15`,
+          border: `1.5px solid ${color}`,
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'center',
+          color: color,
+          fontSize: shortCode.length > 3 ? '10px' : '11px',
+          fontWeight: 800,
+          letterSpacing: '-0.2px',
+          boxShadow: `0 1px 4px ${color}30`,
+          userSelect: 'none',
+        }}
+        title={type}
+      >
+        {shortCode}
+      </div>
+    );
+  }
+
+  return (
+    <img
+      src={iconPath}
+      alt={type}
+      aria-hidden="true"
+      style={{
+        width: '36px',
+        height: '36px',
+        margin: '0 auto',
+        objectFit: 'contain',
+        display: 'block',
+      }}
+      onError={() => setHasError(true)}
+    />
+  );
+};
+
+// ─── Custom Service Node with Multi-directional Handles ─────────────────────────
+
+interface CustomServiceNodeData {
+  content: React.ReactNode;
+}
+
+const CustomServiceNode: React.FC<{ data: CustomServiceNodeData }> = ({ data }) => {
+  return (
+    <div style={{ position: 'relative', width: '100%', height: '100%' }}>
+      {/* Target Handles (Incoming) */}
+      <Handle type="target" position={Position.Top} id="t-in" style={{ opacity: 0, pointerEvents: 'none' }} />
+      <Handle type="target" position={Position.Left} id="l-in" style={{ opacity: 0, pointerEvents: 'none' }} />
+      <Handle type="target" position={Position.Right} id="r-in" style={{ opacity: 0, pointerEvents: 'none' }} />
+      <Handle type="target" position={Position.Bottom} id="b-in" style={{ opacity: 0, pointerEvents: 'none' }} />
+
+      {/* Source Handles (Outgoing) */}
+      <Handle type="source" position={Position.Bottom} id="b-out" style={{ opacity: 0, pointerEvents: 'none' }} />
+      <Handle type="source" position={Position.Right} id="r-out" style={{ opacity: 0, pointerEvents: 'none' }} />
+      <Handle type="source" position={Position.Left} id="l-out" style={{ opacity: 0, pointerEvents: 'none' }} />
+      <Handle type="source" position={Position.Top} id="t-out" style={{ opacity: 0, pointerEvents: 'none' }} />
+
+      {data?.content}
+    </div>
+  );
+};
 
 // Custom group node to ensure boundary headers, icons, and titles render properly in ReactFlow
 const CustomGroupNode: React.FC<{ data: { label?: React.ReactNode } }> = ({ data }) => {
@@ -185,7 +320,7 @@ const INTERNET_ID = '__internet__';
 
 const elk = new ELK();
 
-// Layout options shared by every container in the graph.
+// Layout options shared by root container
 const ROOT_LAYOUT_OPTIONS: Record<string, string> = {
   'elk.algorithm': 'layered',
   'elk.direction': 'DOWN',
@@ -212,8 +347,25 @@ const tierLayoutOptions = (): Record<string, string> => ({
   'elk.padding': `[top=${LABEL_RESERVE + 20},left=22,bottom=20,right=22]`,
 });
 
-// AZ columns should sit side-by-side — lay their subnet bands out top-to-bottom
-// but keep AZ siblings in a horizontal row (handled by the parent VPC's RIGHT flow).
+// Main horizontal row: VPC / Compute on Left, Shared Services on Right
+const mainRowLayoutOptions = (): Record<string, string> => ({
+  'elk.algorithm': 'layered',
+  'elk.direction': 'RIGHT',
+  'elk.layered.spacing.nodeNodeBetweenLayers': '50',
+  'elk.spacing.nodeNode': '40',
+  'elk.padding': '[top=10,left=10,bottom=10,right=10]',
+});
+
+// Shared services sidebar: stacks managed services top-to-bottom
+const sharedLayoutOptions = (): Record<string, string> => ({
+  'elk.algorithm': 'layered',
+  'elk.direction': 'DOWN',
+  'elk.layered.spacing.nodeNodeBetweenLayers': '32',
+  'elk.spacing.nodeNode': '24',
+  'elk.padding': `[top=${LABEL_RESERVE + 20},left=22,bottom=22,right=22]`,
+});
+
+// AZ columns sit side-by-side with subnet bands stacked top-to-bottom
 const azRowLayoutOptions = (): Record<string, string> => ({
   'elk.algorithm': 'layered',
   'elk.direction': 'DOWN',
@@ -351,6 +503,20 @@ function buildCloudChildren(
     regionGroups.get(region)!.push(r);
   }
 
+  // Ensure every region with discovered VPCs or subnets is also grouped into its region box
+  for (const [, vpcRes] of ctx.vpcMeta.entries()) {
+    const region = (vpcRes.region as string) || 'default-region';
+    if (region && region !== 'global' && !regionGroups.has(region)) {
+      regionGroups.set(region, []);
+    }
+  }
+  for (const [, subnetRes] of ctx.subnetMeta.entries()) {
+    const region = (subnetRes.region as string) || 'default-region';
+    if (region && region !== 'global' && !regionGroups.has(region)) {
+      regionGroups.set(region, []);
+    }
+  }
+
   for (const [regionName, regionResources] of regionGroups.entries()) {
     const regionChildren: ElkNode[] = [];
     const vpcGroups = new Map<string, Resource[]>();
@@ -373,28 +539,36 @@ function buildCloudChildren(
       }
     }
 
-    // Categorize regional non-VPC resources into standard AWS architecture tiers
+    // Categorize regional non-VPC resources
     const ingressRes: Resource[] = [];
-    const computeRes: Resource[] = [];
-    const databaseRes: Resource[] = [];
-    const messagingRes: Resource[] = [];
+    const serverlessCompute: Resource[] = [];
+    const sharedServicesRes: Resource[] = [];
     const otherRes: Resource[] = [];
 
     for (const r of regionalNonVpc) {
       if (r.type === 'APIGateway' || r.type === 'Cognito') {
         ingressRes.push(r);
-      } else if (r.type === 'Lambda' || r.type === 'StepFunctions' || r.type === 'Bedrock') {
-        computeRes.push(r);
-      } else if (r.type === 'DynamoDB' || r.type === 'S3' || r.type === 'ElastiCache' || r.type === 'RDS') {
-        databaseRes.push(r);
-      } else if (r.type === 'EventBridge' || r.type === 'SQS' || r.type === 'SNS') {
-        messagingRes.push(r);
+      } else if (r.type === 'Lambda' || r.type === 'StepFunctions') {
+        serverlessCompute.push(r);
+      } else if (
+        r.type === 'DynamoDB' ||
+        r.type === 'S3' ||
+        r.type === 'Bedrock' ||
+        r.type === 'SQS' ||
+        r.type === 'SNS' ||
+        r.type === 'EventBridge' ||
+        r.type === 'KMS' ||
+        r.type === 'SecretsManager' ||
+        r.type === 'CloudWatch' ||
+        r.type === 'ElastiCache'
+      ) {
+        sharedServicesRes.push(r);
       } else {
         otherRes.push(r);
       }
     }
 
-    // Tier 1: Ingress & API Management Tier
+    // ── Tier 1 (Top of Region): Ingress & API Management Tier ──
     if (ingressRes.length > 0) {
       regionChildren.push(
         boundaryElkNode(
@@ -407,51 +581,12 @@ function buildCloudChildren(
       );
     }
 
-    // Tier 2: Serverless Compute & Orchestration Tier
-    if (computeRes.length > 0) {
-      regionChildren.push(
-        boundaryElkNode(
-          `__tier_compute_${regionName}__`,
-          'TierCompute',
-          'Serverless Compute & App Services',
-          computeRes.map(serviceElkNode),
-          tierLayoutOptions()
-        )
-      );
-    }
+    // ── Tier 2 (Main Regional Body): Side-by-Side (VPC on Left, Shared Services on Right) ──
+    const mainRowChildren: ElkNode[] = [];
 
-    // Tier 3: Database & Storage Layer
-    if (databaseRes.length > 0) {
-      regionChildren.push(
-        boundaryElkNode(
-          `__tier_database_${regionName}__`,
-          'TierDatabase',
-          'Database & Storage Layer',
-          databaseRes.map(serviceElkNode),
-          tierLayoutOptions()
-        )
-      );
-    }
+    // Left Column: VPC Containers & Compute
+    const leftColumnChildren: ElkNode[] = [];
 
-    // Tier 4: Messaging & Event Integration Tier
-    if (messagingRes.length > 0) {
-      regionChildren.push(
-        boundaryElkNode(
-          `__tier_messaging_${regionName}__`,
-          'TierMessaging',
-          'Messaging & Event Integration',
-          messagingRes.map(serviceElkNode),
-          tierLayoutOptions()
-        )
-      );
-    }
-
-    // Other non-VPC resources
-    for (const r of otherRes) {
-      regionChildren.push(serviceElkNode(r));
-    }
-
-    // Tier 5: VPC Containers inside the Region
     for (const [vpcId, vpcResources] of vpcGroups.entries()) {
       const vpcChildren: ElkNode[] = [];
 
@@ -560,7 +695,7 @@ function buildCloudChildren(
       const vpcCidr = vpcMetaRes?.cidr_block ? ` · CIDR: ${vpcMetaRes.cidr_block}` : '';
       const vpcLabel = `VPC: ${vpcName}${vpcId}${vpcCidr}`;
 
-      regionChildren.push(
+      leftColumnChildren.push(
         boundaryElkNode(
           `__vpc_${vpcId}__`,
           'VPC',
@@ -569,6 +704,71 @@ function buildCloudChildren(
           containerLayoutOptions()
         )
       );
+    }
+
+    // If serverless compute (non-VPC Lambda / StepFunctions) exists
+    if (serverlessCompute.length > 0) {
+      leftColumnChildren.push(
+        boundaryElkNode(
+          `__tier_compute_${regionName}__`,
+          'TierCompute',
+          'Serverless Compute & App Services',
+          serverlessCompute.map(serviceElkNode),
+          tierLayoutOptions()
+        )
+      );
+    }
+
+    // Add left column if it has children
+    if (leftColumnChildren.length > 0) {
+      if (leftColumnChildren.length === 1) {
+        mainRowChildren.push(leftColumnChildren[0]);
+      } else {
+        mainRowChildren.push(
+          boundaryElkNode(
+            `__left_column_${regionName}__`,
+            'AWSCloud',
+            '',
+            leftColumnChildren,
+            containerLayoutOptions()
+          )
+        );
+      }
+    }
+
+    // Right Column: AWS Managed & Shared Services Sidebar
+    if (sharedServicesRes.length > 0) {
+      mainRowChildren.push(
+        boundaryElkNode(
+          `__shared_services_${regionName}__`,
+          'SharedServices',
+          'AWS Managed & Shared Services',
+          sharedServicesRes.map(serviceElkNode),
+          sharedLayoutOptions()
+        )
+      );
+    }
+
+    // Add remaining other resources
+    for (const r of otherRes) {
+      mainRowChildren.push(serviceElkNode(r));
+    }
+
+    // Add main horizontal row to region
+    if (mainRowChildren.length > 0) {
+      if (mainRowChildren.length === 1 && ingressRes.length === 0) {
+        regionChildren.push(mainRowChildren[0]);
+      } else {
+        regionChildren.push(
+          boundaryElkNode(
+            `__main_row_${regionName}__`,
+            'AWSCloud',
+            '',
+            mainRowChildren,
+            mainRowLayoutOptions()
+          )
+        );
+      }
     }
 
     const regionDisplay = getRegionDisplayName(regionName);
@@ -592,92 +792,90 @@ function buildCloudChildren(
 
 // ─── ELK → ReactFlow conversion ────────────────────────────────────────────────
 
-function serviceNodeData(r: Resource, isDark: boolean, costUsd?: number) {
+function serviceNodeContent(
+  r: Resource,
+  isDark: boolean,
+  costUsd?: number
+) {
   if (r.id.startsWith('__subnet_badge_')) {
     const isPublic = r.is_public;
-    return {
-      label: (
-        <div style={{ textAlign: 'center', padding: '6px' }}>
-          <div style={{ fontSize: '11px', fontWeight: 600, color: isPublic ? '#7aa116' : '#147eba' }}>
-            {r.name}
-          </div>
-          <div style={{ fontSize: '9px', color: isDark ? '#94a3b8' : '#64748b', marginTop: '2px' }}>
-            {isPublic ? 'Public Subnet CIDR' : 'Private Subnet CIDR'}
-          </div>
+    return (
+      <div style={{ textAlign: 'center', padding: '6px' }}>
+        <div style={{ fontSize: '11px', fontWeight: 600, color: isPublic ? '#7aa116' : '#147eba' }}>
+          {r.name}
         </div>
-      ),
-    };
+        <div style={{ fontSize: '9px', color: isDark ? '#94a3b8' : '#64748b', marginTop: '2px' }}>
+          {isPublic ? 'Public Subnet CIDR' : 'Private Subnet CIDR'}
+        </div>
+      </div>
+    );
   }
 
   const iconPath = getIconPath(r.type, isDark);
   const officialServiceName = AWS_SERVICE_NAMES[r.type] || r.type;
+  const brandColor = AWS_SERVICE_COLORS[r.type] || '#64748b';
 
-  return {
-    label: (
-      <div style={{ textAlign: 'center', padding: '6px 8px', overflow: 'hidden', position: 'relative', width: '100%' }}>
-        {r.isRecommended && (
-          <span
-            style={{
-              position: 'absolute',
-              top: 0,
-              right: 0,
-              fontSize: '8px',
-              fontWeight: 700,
-              background: '#22c55e',
-              color: '#ffffff',
-              padding: '1px 4px',
-              borderRadius: '4px',
-              zIndex: 10,
-            }}
-            title="Recommended by AWS Well-Architected Framework"
-          >
-            +WAF
-          </span>
-        )}
-        {iconPath && (
-          <img
-            src={iconPath}
-            alt=""
-            aria-hidden="true"
-            style={{ width: '36px', height: '36px', margin: '0 auto', objectFit: 'contain' }}
-            onError={(e) => { (e.currentTarget as HTMLImageElement).style.visibility = 'hidden'; }}
-          />
-        )}
-        <div
+  return (
+    <div style={{ textAlign: 'center', padding: '6px 8px', overflow: 'hidden', position: 'relative', width: '100%' }}>
+      {r.isRecommended && (
+        <span
           style={{
-            fontSize: '11px',
-            fontWeight: 600,
-            color: isDark ? '#f1f5f9' : '#0f172a',
-            marginTop: '3px',
-            whiteSpace: 'nowrap',
-            overflow: 'hidden',
-            textOverflow: 'ellipsis',
+            position: 'absolute',
+            top: 0,
+            right: 0,
+            fontSize: '8px',
+            fontWeight: 700,
+            background: '#22c55e',
+            color: '#ffffff',
+            padding: '1px 4px',
+            borderRadius: '4px',
+            zIndex: 10,
           }}
-          title={r.name}
+          title="Recommended by AWS Well-Architected Framework"
         >
-          {truncateName(r.name, 18)}
-        </div>
-        <div
-          style={{
-            fontSize: '9px',
-            fontWeight: 500,
-            color: isDark ? '#94a3b8' : '#64748b',
-            whiteSpace: 'nowrap',
-            overflow: 'hidden',
-            textOverflow: 'ellipsis',
-          }}
-          title={officialServiceName}
-        >
-          {officialServiceName}
-        </div>
-        {costUsd !== undefined && costUsd > 0 && (
-          <div style={{ fontSize: '9px', fontWeight: 700, color: '#22c55e', marginTop: '1px' }}>
-            ${costUsd.toFixed(0)}/mo
-          </div>
-        )}
+          +WAF
+        </span>
+      )}
+      <AwsServiceIcon
+        type={r.type}
+        iconPath={iconPath}
+        color={brandColor}
+        isDark={isDark}
+      />
+      <div
+        style={{
+          fontSize: '11px',
+          fontWeight: 600,
+          color: isDark ? '#f1f5f9' : '#0f172a',
+          marginTop: '4px',
+          whiteSpace: 'nowrap',
+          overflow: 'hidden',
+          textOverflow: 'ellipsis',
+        }}
+        title={r.name}
+      >
+        {truncateName(r.name, 18)}
       </div>
-    ),
-  };
+      <div
+        style={{
+          fontSize: '9px',
+          fontWeight: 500,
+          color: isDark ? '#94a3b8' : '#64748b',
+          whiteSpace: 'nowrap',
+          overflow: 'hidden',
+          textOverflow: 'ellipsis',
+        }}
+        title={officialServiceName}
+      >
+        {officialServiceName}
+      </div>
+      {costUsd !== undefined && costUsd > 0 && (
+        <div style={{ fontSize: '9px', fontWeight: 700, color: '#22c55e', marginTop: '1px' }}>
+          ${costUsd.toFixed(0)}/mo
+        </div>
+      )}
+    </div>
+  );
 }
 
 function boundaryNodeData(labelText: string, labelColor: string, styleKey: string, isDark: boolean) {
@@ -750,11 +948,11 @@ function elkToReactFlow(
     if (node.__kind === 'internet') {
       nodes.push({
         id: node.id,
-        type: 'default',
+        type: 'service',
         position: { x, y },
         ...(parentId ? { parentNode: parentId, extent: 'parent' as const } : {}),
         data: {
-          label: (
+          content: (
             <div style={{ textAlign: 'center', padding: '8px' }}>
               <div style={{ fontSize: '24px' }}>🌐</div>
               <div
@@ -780,8 +978,6 @@ function elkToReactFlow(
           alignItems: 'center',
           justifyContent: 'center',
         },
-        sourcePosition: Position.Bottom,
-        targetPosition: Position.Top,
       });
       return;
     }
@@ -792,10 +988,12 @@ function elkToReactFlow(
       if (r.id.startsWith('__subnet_badge_')) {
         nodes.push({
           id: r.id,
-          type: 'default',
+          type: 'service',
           position: { x, y },
           ...(parentId ? { parentNode: parentId, extent: 'parent' as const } : {}),
-          data: serviceNodeData(r, isDark),
+          data: {
+            content: serviceNodeContent(r, isDark),
+          },
           style: {
             width: node.width ?? 140,
             height: node.height ?? 50,
@@ -836,10 +1034,12 @@ function elkToReactFlow(
 
       nodes.push({
         id: r.id,
-        type: 'default',
+        type: 'service',
         position: { x, y },
         ...(parentId ? { parentNode: parentId, extent: 'parent' as const } : {}),
-        data: serviceNodeData(r, isDark, costUsd),
+        data: {
+          content: serviceNodeContent(r, isDark, costUsd),
+        },
         style: {
           width: (node.width ?? NODE_WIDTH) + extraW,
           height: (node.height ?? NODE_HEIGHT) + extraH,
@@ -848,14 +1048,36 @@ function elkToReactFlow(
           borderRadius: '10px',
           ...(boxShadow ? { boxShadow } : {}),
         },
-        sourcePosition: Position.Bottom,
-        targetPosition: Position.Top,
       });
       return;
     }
 
     // Boundary container
     if (node.__kind === 'boundary') {
+      // Invisible structural organizers
+      if (node.id.startsWith('__main_row_') || node.id.startsWith('__left_column_')) {
+        nodes.push({
+          id: node.id,
+          type: 'group',
+          position: { x, y },
+          ...(parentId ? { parentNode: parentId, extent: 'parent' as const } : {}),
+          data: { label: null },
+          style: {
+            width: node.width ?? NODE_WIDTH,
+            height: node.height ?? NODE_HEIGHT,
+            border: 'none',
+            backgroundColor: 'transparent',
+            pointerEvents: 'none',
+          },
+          selectable: false,
+        });
+
+        for (const child of node.children || []) {
+          walk(child, node.id);
+        }
+        return;
+      }
+
       const styleKey = node.__boundaryStyleKey || 'VPC';
       const style = groupStyles[styleKey] || groupStyles.VPC;
 
@@ -887,6 +1109,22 @@ function elkToReactFlow(
   return nodes;
 }
 
+// ─── Absolute position helper for orthogonal routing ─────────────────────────
+
+function computeAbsolutePositions(root: ElkNode): Map<string, { x: number; y: number }> {
+  const map = new Map<string, { x: number; y: number }>();
+  const walk = (node: ElkNode, px: number, py: number) => {
+    const curX = px + (node.x ?? 0);
+    const curY = py + (node.y ?? 0);
+    map.set(node.id, { x: curX, y: curY });
+    for (const child of node.children || []) {
+      walk(child, curX, curY);
+    }
+  };
+  walk(root, 0, 0);
+  return map;
+}
+
 // ─── Edges ─────────────────────────────────────────────────────────────────────
 
 function buildEdges(
@@ -894,7 +1132,8 @@ function buildEdges(
   relationships: Relationship[],
   isDark: boolean,
   hasInternet: boolean,
-  viewMode: DiagramViewMode = 'logical'
+  viewMode: DiagramViewMode = 'logical',
+  nodePositions?: Map<string, { x: number; y: number }>
 ): Edge[] {
   const isDataFlow = viewMode === 'dataflow';
   const flowColor = isDark ? '#38bdf8' : '#0284c7';
@@ -911,10 +1150,41 @@ function buildEdges(
     if (edgeSet.has(key)) return;
     edgeSet.add(key);
 
+    let sourceHandle = 'b-out';
+    let targetHandle = 't-in';
+
+    const posSrc = nodePositions?.get(src);
+    const posTgt = nodePositions?.get(tgt);
+
+    if (posSrc && posTgt) {
+      const dx = posTgt.x - posSrc.x;
+      const dy = posTgt.y - posSrc.y;
+
+      if (Math.abs(dx) > Math.abs(dy)) {
+        if (dx > 0) {
+          sourceHandle = 'r-out';
+          targetHandle = 'l-in';
+        } else {
+          sourceHandle = 'l-out';
+          targetHandle = 'r-in';
+        }
+      } else {
+        if (dy > 0) {
+          sourceHandle = 'b-out';
+          targetHandle = 't-in';
+        } else {
+          sourceHandle = 't-out';
+          targetHandle = 'b-in';
+        }
+      }
+    }
+
     edges.push({
       id: `edge-${edges.length}`,
       source: src,
       target: tgt,
+      sourceHandle,
+      targetHandle,
       type: 'smoothstep',
       animated: isDataFlow || src === INTERNET_ID,
       style: {
@@ -936,7 +1206,7 @@ function buildEdges(
     });
   };
 
-  // 1. Discovered real relationships from AWS configuration
+  // 1. Discovered real relationships from AWS configuration & DynamoDB adjacency list
   for (const rel of relationships) {
     if (nodeIds.has(rel.source) && nodeIds.has(rel.target)) {
       addEdge(rel.source, rel.target, rel.relationship);
@@ -1170,8 +1440,6 @@ async function buildAndLayout(
   }
 
   // Cost View: map each resource TYPE → monthly cost from the billing footprint.
-  // Billing service strings are fuzzy (e.g. "Amazon Elastic Compute Cloud"),
-  // so match by keyword against our type names.
   const costMap = new Map<string, number>();
   let maxCost = 0;
   if (viewMode === 'cost' && servicesFootprint.length) {
@@ -1208,7 +1476,6 @@ async function buildAndLayout(
   const ctx: GroupContext = { isDark, viewMode, vpcMeta, subnetMeta };
   const cloudChildren = buildCloudChildren(serviceResources, ctx);
 
-  const groupStyles = getGroupStyles(isDark);
   const accountRes = resources.find((r) => r.account_id || r.account);
   const accountId = (explicitAccountId || accountRes?.account_id || accountRes?.account || '') as string;
   const cloudLabel = accountId ? `AWS Cloud · Account: ${accountId}` : 'AWS Cloud';
@@ -1248,8 +1515,7 @@ async function buildAndLayout(
   };
 
   // elk.layout is async and returns the graph with computed geometry.
-  // elkjs types are loose; cast through unknown to our local ElkNode shape.
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  // @ts-ignore
   const laid = (await elk.layout(graph as any)) as unknown as ElkNode;
 
   const nodes: Node[] = [];
@@ -1257,7 +1523,6 @@ async function buildAndLayout(
   // Emit each top-level child (internet + aws cloud) and their subtrees.
   for (const child of laid.children || []) {
     if (child.__kind === 'internet') {
-      // Internet is a top-level node with no parent.
       const single = elkToReactFlow(
         { ...child, __kind: 'internet' },
         isDark,
@@ -1267,12 +1532,21 @@ async function buildAndLayout(
       );
       nodes.push(...single);
     } else {
-      // AWS Cloud boundary subtree.
       nodes.push(...elkToReactFlow(child, isDark, viewMode, costMap, maxCost));
     }
   }
 
-  const edges = buildEdges(serviceResources, relationships, isDark, hasPublicFacing, viewMode);
+  // Compute absolute positions for all nodes across nested boundaries
+  const nodePositions = computeAbsolutePositions(laid);
+
+  const edges = buildEdges(
+    serviceResources,
+    relationships,
+    isDark,
+    hasPublicFacing,
+    viewMode,
+    nodePositions
+  );
 
   return { nodes, edges };
 }
@@ -1371,6 +1645,7 @@ export default function ArchitectureDiagram({
 
   const nodeTypes = React.useMemo(() => ({
     group: CustomGroupNode,
+    service: CustomServiceNode,
   }), []);
 
   const [nodes, setNodes, onNodesChange] = useNodesState([]);
@@ -1394,8 +1669,9 @@ export default function ArchitectureDiagram({
         setEdges(laidEdges);
         setIsLayingOut(false);
       })
-      .catch(() => {
+      .catch((err) => {
         if (cancelled) return;
+        console.error('Architecture diagram layout error:', err);
         setNodes([]);
         setEdges([]);
         setIsLayingOut(false);
@@ -1540,4 +1816,3 @@ export default function ArchitectureDiagram({
     </div>
   );
 }
-

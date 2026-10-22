@@ -1,11 +1,19 @@
-import { useState } from 'react';
+import { useState, useRef, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useAppStore } from '../store/useAppStore';
-import { analyzeArchitecture, generateCFT, generateTerraform } from '../services/api';
+import {
+  analyzeArchitecture,
+  getAnalysisStatus,
+  generateCFT,
+  getCFTStatus,
+  generateTerraform,
+  getTerraformStatus,
+} from '../services/api';
 import { WAF_PILLARS } from '../config/constants';
 import { scoreTextClass, PRIORITY_BADGE } from '../config/theme';
 import toast from 'react-hot-toast';
 import ArchitectureDiagram from '../components/ArchitectureDiagram';
+import ProgressBarModal from '../components/ProgressBarModal';
 import {
   SparklesIcon,
   ArrowDownTrayIcon,
@@ -26,6 +34,7 @@ export default function RedefineArchPage() {
   const navigate = useNavigate();
   const {
     scanResult, analysisResult, setAnalysisResult,
+    setSelectedRecommendationId,
     cftResult, setCftResult, terraformResult, setTerraformResult,
     selectedPillars, setSelectedPillars,
     setCurrentStep, isLoading, setLoading,
@@ -36,6 +45,45 @@ export default function RedefineArchPage() {
   const [recSearch, setRecSearch] = useState('');
   const [recPillarFilter, setRecPillarFilter] = useState('all');
   const [recPriorityFilter, setRecPriorityFilter] = useState('all');
+  const [generatingScriptId, setGeneratingScriptId] = useState<string | null>(null);
+  const analysisCancelledRef = useRef(false);
+
+  // Clear previous analysis if it belongs to a different scan
+  useEffect(() => {
+    if (analysisResult?.scanId && scanResult?.scanId && analysisResult.scanId !== scanResult.scanId) {
+      setAnalysisResult(null);
+    }
+  }, [scanResult?.scanId]);
+
+  function handleCancelAnalysis() {
+    analysisCancelledRef.current = true;
+    setLoading(false);
+    setCurrentStep('discovered');
+    toast('Architecture analysis cancelled', { icon: 'ℹ️' });
+  }
+
+  // AWS Well-Architected Framework Official Risk Penalty Formula:
+  // Pillar Score = 100 - (Critical Risks * 20) - (High Risks * 10) - (Medium Risks * 5)
+  // Overall Health Score = Average of all evaluated Pillar Scores
+  const calculatedOverallScore = (() => {
+    if (!analysisResult?.analysis) return 0;
+    const recs = analysisResult.analysis.recommendations || [];
+    const pillarKeys = WAF_PILLARS.map(p => p.key);
+    const pillarScoresList: number[] = [];
+
+    pillarKeys.forEach((key) => {
+      const pRecs = recs.filter((r: any) => (r.pillar || '').toLowerCase() === key.toLowerCase());
+      const critical = pRecs.filter((r: any) => r.priority === 'CRITICAL' || (r.risk_score && r.risk_score >= 8)).length;
+      const high = pRecs.filter((r: any) => r.priority === 'HIGH' || (r.risk_score && r.risk_score >= 5 && r.risk_score < 8)).length;
+      const medium = pRecs.filter((r: any) => r.priority === 'MEDIUM' || (r.risk_score && r.risk_score >= 2 && r.risk_score < 5)).length;
+
+      const score = Math.max(0, Math.min(100, 100 - (critical * 20) - (high * 10) - (medium * 5)));
+      pillarScoresList.push(score);
+    });
+
+    if (pillarScoresList.length === 0) return 100;
+    return Math.round(pillarScoresList.reduce((a, b) => a + b, 0) / pillarScoresList.length);
+  })();
 
   // Derive proposed architecture by synthesizing current architecture + WAF recommendations/changes
   const proposedArchitecture = (() => {
@@ -126,7 +174,7 @@ export default function RedefineArchPage() {
 
   async function handleAnalyze() {
     if (selectedPillars.length === 0) {
-      toast.error('Select at least one WAF pillar');
+      toast.error('Select at least one AWS Well-Architected Framework pillar');
       return;
     }
     if (!scanResult) {
@@ -136,25 +184,77 @@ export default function RedefineArchPage() {
 
     setLoading(true);
     setCurrentStep('analyzing');
+    analysisCancelledRef.current = false;
+    setAnalysisResult(null);
 
     try {
       const response = await analyzeArchitecture({
         scanId: scanResult.scanId,
         pillars: selectedPillars,
+        architectureData: scanResult,
       });
+
+      if (analysisCancelledRef.current) return;
 
       if (response.error) {
         toast.error(response.error);
         setCurrentStep('discovered');
+        setLoading(false);
+        return;
+      }
+
+      // Check if job is processing asynchronously via SQS
+      const resData = response.data as any;
+      if (resData?.status === 'IN_PROGRESS') {
+        const pollSec = Number(resData.pollIntervalSeconds);
+
+        // Polling loop
+        const scanIdToPoll = scanResult.scanId;
+        const maxAttempts = 120; // 120 * 5s = 10 minutes max
+        let attempts = 0;
+        let completed = false;
+
+        while (attempts < maxAttempts && !completed) {
+          await new Promise((r) => setTimeout(r, pollSec * 1000));
+          if (analysisCancelledRef.current) return;
+          attempts++;
+
+          try {
+            const statusRes = await getAnalysisStatus(scanIdToPoll);
+            if (statusRes.data?.status === 'COMPLETED' && statusRes.data?.result) {
+              completed = true;
+              toast.dismiss('poll-toast');
+              const finalResult = statusRes.data.result as any;
+              setAnalysisResult(finalResult);
+              setCurrentStep('analyzed');
+              toast.success('Analysis complete! Review recommendations below.');
+              break;
+            } else if (statusRes.data?.status === 'FAILED' || statusRes.data?.status === 'ERROR') {
+              completed = true;
+              toast.dismiss('poll-toast');
+              toast.error(statusRes.data.error || 'Bedrock analysis failed in background worker.');
+              setCurrentStep('discovered');
+              break;
+            }
+          } catch (pollErr) {
+            console.warn('Status poll attempt failed:', pollErr);
+          }
+        }
+
+        if (!completed) {
+          toast.dismiss('poll-toast');
+          toast.error('Analysis timed out after maximum polling attempts.');
+          setCurrentStep('discovered');
+        }
       } else {
-        setAnalysisResult(response.data as any);
+        // Synchronous fallback result
+        const syncResult = response.data as any;
+        setAnalysisResult(syncResult);
         setCurrentStep('analyzed');
         toast.success('Analysis complete! Review recommendations below.');
-        
-        // Auto-generate scripts
-        await handleGenerateScripts((response.data as any).recommendationId);
       }
     } catch (err: any) {
+      toast.dismiss('poll-toast');
       toast.error(err?.message || 'Analysis failed. Please try again.');
       setCurrentStep('discovered');
     } finally {
@@ -162,31 +262,90 @@ export default function RedefineArchPage() {
     }
   }
 
-  async function handleGenerateScripts(recommendationId: string) {
+  async function handleGenerateScripts(recommendationId?: string) {
+    const targetRecId = recommendationId || analysisResult?.recommendationId || analysisResult?.analysis?.recommendations?.[0]?.id || 'all';
+    setGeneratingScriptId(targetRecId);
     setCurrentStep('generating_scripts');
+    const toastId = toast.loading('Generating CloudFormation & Terraform scripts via Amazon Bedrock (SQS worker)...');
 
     try {
-      const [cftRes, tfRes] = await Promise.all([
-        generateCFT({ recommendationId, scanId: scanResult?.scanId }),
-        generateTerraform({ recommendationId, scanId: scanResult?.scanId }),
+      const [initialCftRes, initialTfRes] = await Promise.all([
+        generateCFT({ recommendationId: targetRecId, scanId: scanResult?.scanId }),
+        generateTerraform({ recommendationId: targetRecId, scanId: scanResult?.scanId }),
       ]);
 
-      if (!cftRes.error) {
-        setCftResult(cftRes.data as any);
-      } else {
-        toast.error(`CFT Error: ${cftRes.error}`);
+      // Helper to poll CFT status if enqueued to SQS
+      const resolveCFT = async () => {
+        const cftData = initialCftRes.data as any;
+        if (cftData?.status === 'IN_PROGRESS' && cftData?.jobId) {
+          const pollSec = Number(cftData.pollIntervalSeconds) || 5;
+          const maxAttempts = 60;
+          for (let i = 0; i < maxAttempts; i++) {
+            await new Promise((r) => setTimeout(r, pollSec * 1000));
+            const statusRes = await getCFTStatus(cftData.jobId);
+            if (statusRes.data?.status === 'COMPLETED' && statusRes.data.result) {
+              return statusRes.data.result;
+            }
+            if (statusRes.data?.status === 'FAILED' || statusRes.data?.status === 'ERROR') {
+              throw new Error(statusRes.data.error || 'CloudFormation generation failed in worker');
+            }
+          }
+          throw new Error('CloudFormation generation timed out after polling');
+        }
+        if (initialCftRes.error) throw new Error(initialCftRes.error);
+        return initialCftRes.data;
+      };
+
+      // Helper to poll Terraform status if enqueued to SQS
+      const resolveTF = async () => {
+        const tfData = initialTfRes.data as any;
+        if (tfData?.status === 'IN_PROGRESS' && tfData?.jobId) {
+          const pollSec = Number(tfData.pollIntervalSeconds) || 5;
+          const maxAttempts = 60;
+          for (let i = 0; i < maxAttempts; i++) {
+            await new Promise((r) => setTimeout(r, pollSec * 1000));
+            const statusRes = await getTerraformStatus(tfData.jobId);
+            if (statusRes.data?.status === 'COMPLETED' && statusRes.data.result) {
+              return statusRes.data.result;
+            }
+            if (statusRes.data?.status === 'FAILED' || statusRes.data?.status === 'ERROR') {
+              throw new Error(statusRes.data.error || 'Terraform generation failed in worker');
+            }
+          }
+          throw new Error('Terraform generation timed out after polling');
+        }
+        if (initialTfRes.error) throw new Error(initialTfRes.error);
+        return initialTfRes.data;
+      };
+
+      const [cftFinal, tfFinal] = await Promise.allSettled([resolveCFT(), resolveTF()]);
+
+      if (cftFinal.status === 'fulfilled' && cftFinal.value) {
+        setCftResult(cftFinal.value as any);
+      } else if (cftFinal.status === 'rejected') {
+        toast.error(`CFT Error: ${cftFinal.reason?.message || 'Failed'}`);
       }
 
-      if (!tfRes.error) {
-        setTerraformResult(tfRes.data as any);
-      } else {
-        toast.error(`Terraform Error: ${tfRes.error}`);
+      if (tfFinal.status === 'fulfilled' && tfFinal.value) {
+        setTerraformResult(tfFinal.value as any);
+      } else if (tfFinal.status === 'rejected') {
+        toast.error(`Terraform Error: ${tfFinal.reason?.message || 'Failed'}`);
       }
 
+      toast.dismiss(toastId);
+      if (cftFinal.status === 'fulfilled' || tfFinal.status === 'fulfilled') {
+        toast.success('CloudFormation & Terraform scripts generated successfully!');
+        setTimeout(() => {
+          document.getElementById('generated-iac-scripts')?.scrollIntoView({ behavior: 'smooth' });
+        }, 150);
+      }
       setCurrentStep('scripts_ready');
     } catch (err: any) {
+      toast.dismiss(toastId);
       toast.error(err?.message || 'Script generation failed');
       setCurrentStep('analyzed');
+    } finally {
+      setGeneratingScriptId(null);
     }
   }
 
@@ -212,6 +371,14 @@ export default function RedefineArchPage() {
 
   return (
     <div className="space-y-6 animate-fade-in">
+      {/* Enterprise Clean Progress Modal */}
+      <ProgressBarModal
+        isOpen={isLoading}
+        title="Evaluating Well-Architected Framework..."
+        subtitle="Please wait while AI analyzes your architecture"
+        onCancel={handleCancelAnalysis}
+      />
+
       {/* Header */}
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
         <div>
@@ -232,7 +399,7 @@ export default function RedefineArchPage() {
         <div className="flex items-center justify-between mb-4">
           <h2 className="text-lg font-semibold text-white flex items-center gap-2">
             <ShieldCheckIcon className="w-5 h-5 text-primary-400" />
-            Select Optimization Pillars
+            Select AWS Well-Architected Framework Pillars
           </h2>
           <button onClick={selectAllPillars} className="text-sm text-primary-400 hover:text-primary-300 font-medium">
             Select All
@@ -304,45 +471,68 @@ export default function RedefineArchPage() {
               <h2 className="text-lg font-semibold text-white">Analysis Summary</h2>
               <div className="flex items-center gap-2">
                 <span className="text-sm text-gray-400">Overall Score:</span>
-                <span className={`text-2xl font-medium ${scoreTextClass(analysisResult.analysis.overall_score || 0)}`}>
-                  {analysisResult.analysis.overall_score || 0}/100
+                <span className={`text-2xl font-medium ${scoreTextClass(calculatedOverallScore)}`}>
+                  {calculatedOverallScore}/100
                 </span>
               </div>
             </div>
             <p className="text-gray-300">{analysisResult.analysis.summary}</p>
 
-            {/* Cost Analysis from Bedrock */}
-            {analysisResult.analysis.cost_analysis && (
-              <div className="mt-4 p-4 bg-dark-900 rounded-lg border border-dark-700">
-                <h4 className="text-sm font-medium text-gray-300 mb-3">💰 Cost Analysis</h4>
-                <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
-                  <div>
-                    <p className="text-xs text-gray-500">Current Monthly</p>
-                    <p className="text-lg font-bold text-white">
-                      ${analysisResult.analysis.cost_analysis.current_estimated_monthly_usd?.toFixed(2) || '0.00'}
-                    </p>
+            {/* Cost Analysis - Aligned with AWS Billing & Cost Management */}
+            {analysisResult.analysis.cost_analysis && (() => {
+              const ca = analysisResult.analysis.cost_analysis;
+              const rawSpend = Number(ca.current_estimated_monthly_usd || 0);
+              const monthlySavings = Number(ca.net_monthly_impact_usd || 0);
+              // Calculate real Month-to-Date based on current calendar day progress or provided MTD
+              const todayDay = new Date().getDate();
+              const daysInMonth = new Date(new Date().getFullYear(), new Date().getMonth() + 1, 0).getDate();
+              const monthToDate = ca.month_to_date_usd ?? Number((rawSpend * (todayDay / daysInMonth)).toFixed(2));
+              const forecastedTotal = ca.forecasted_monthly_usd ?? Number(rawSpend.toFixed(2));
+              const costAfterRecommendations = Math.max(0, Number((forecastedTotal - monthlySavings).toFixed(2)));
+
+              return (
+                <div className="mt-4 p-4 bg-dark-900 rounded-lg border border-dark-700">
+                  <div className="flex items-center justify-between mb-3">
+                    <h4 className="text-sm font-medium text-gray-300 flex items-center gap-2">
+                      <span>💰</span> AWS Cost Analysis &amp; Optimization
+                    </h4>
+                    <span className="text-[11px] text-gray-400 bg-dark-800 px-2.5 py-0.5 rounded border border-dark-700 font-medium">
+                      Synced with AWS Cost Explorer
+                    </span>
                   </div>
-                  <div>
-                    <p className="text-xs text-gray-500">Projected Monthly</p>
-                    <p className="text-lg font-bold text-green-400">
-                      ${analysisResult.analysis.cost_analysis.projected_monthly_usd?.toFixed(2) || '0.00'}
-                    </p>
-                  </div>
-                  <div>
-                    <p className="text-xs text-gray-500">Net Monthly Impact</p>
-                    <p className="text-lg font-bold text-green-400">
-                      ${analysisResult.analysis.cost_analysis.net_monthly_impact_usd?.toFixed(2) || '0.00'}/mo
-                    </p>
-                  </div>
-                  <div>
-                    <p className="text-xs text-gray-500">ROI Timeline</p>
-                    <p className="text-lg font-bold text-primary-400">
-                      {analysisResult.analysis.cost_analysis.roi_timeline_months || 'N/A'} months
-                    </p>
+                  <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+                    <div>
+                      <p className="text-xs text-gray-400 font-medium">Month-to-Date Cost</p>
+                      <p className="text-lg font-bold text-white mt-0.5">
+                        ${monthToDate.toFixed(2)}
+                      </p>
+                      <p className="text-[10px] text-gray-500 mt-0.5">Current month actual spend</p>
+                    </div>
+                    <div>
+                      <p className="text-xs text-gray-400 font-medium">Total Forecasted Cost</p>
+                      <p className="text-lg font-bold text-amber-400 mt-0.5">
+                        ${forecastedTotal.toFixed(2)}
+                      </p>
+                      <p className="text-[10px] text-gray-500 mt-0.5">Estimated end-of-month bill</p>
+                    </div>
+                    <div>
+                      <p className="text-xs text-gray-400 font-medium">Cost After Recommendations</p>
+                      <p className="text-lg font-bold text-green-400 mt-0.5">
+                        ${costAfterRecommendations.toFixed(2)}
+                      </p>
+                      <p className="text-[10px] text-gray-500 mt-0.5">Optimized monthly run rate</p>
+                    </div>
+                    <div>
+                      <p className="text-xs text-gray-400 font-medium">Estimated Monthly Savings</p>
+                      <p className="text-lg font-bold text-emerald-400 mt-0.5">
+                        ${monthlySavings.toFixed(2)}/mo
+                      </p>
+                      <p className="text-[10px] text-gray-500 mt-0.5">Net recurrent monthly savings</p>
+                    </div>
                   </div>
                 </div>
-              </div>
-            )}
+              );
+            })()}
           </div>
 
           {/* Architecture Comparison — current vs proposed (SOW 4.3) */}
@@ -355,7 +545,7 @@ export default function RedefineArchPage() {
                     Architecture Comparison
                   </h2>
                   <p className="text-xs text-gray-400 mt-0.5">
-                    Compare current topology with Bedrock WAF-recommended target architecture
+                    Compare current topology with Bedrock AWS Well-Architected Framework recommended target architecture
                   </p>
                 </div>
                 <div className="flex items-center gap-4 text-xs">
@@ -391,12 +581,12 @@ export default function RedefineArchPage() {
                   </div>
                 </div>
 
-                {/* Proposed WAF Architecture Diagram */}
+                {/* Proposed AWS Well-Architected Framework Architecture Diagram */}
                 <div className="flex flex-col">
                   <div className="flex items-center justify-between mb-2">
                     <div className="flex items-center gap-2">
                       <span className="w-2 h-2 rounded-full bg-green-400" />
-                      <span className="text-sm font-medium text-green-300">Proposed Architecture (WAF Optimized)</span>
+                      <span className="text-sm font-medium text-green-300">Proposed Architecture (AWS Well-Architected Framework Optimized)</span>
                     </div>
                     <span className="text-[11px] text-green-400 bg-green-500/10 px-2 py-0.5 rounded border border-green-500/30">
                       +{Math.max(0, (proposedArchitecture?.resources.length || scanResult.resources.length) - scanResult.resources.length)} Recommended Components
@@ -479,6 +669,26 @@ export default function RedefineArchPage() {
                   <option value="MEDIUM">Medium</option>
                   <option value="LOW">Low</option>
                 </select>
+
+                {/* Master Generate Scripts Button */}
+                <button
+                  onClick={() => handleGenerateScripts()}
+                  disabled={generatingScriptId !== null}
+                  className="btn-primary text-xs flex items-center gap-1.5 px-3 py-1.5 whitespace-nowrap"
+                  title="Generate CloudFormation & Terraform scripts for these recommendations"
+                >
+                  {generatingScriptId ? (
+                    <>
+                      <div className="w-3 h-3 border-2 border-white border-t-transparent rounded-full animate-spin" />
+                      <span>Generating Scripts...</span>
+                    </>
+                  ) : (
+                    <>
+                      <DocumentTextIcon className="w-3.5 h-3.5" />
+                      <span>Generate CFT &amp; Terraform</span>
+                    </>
+                  )}
+                </button>
               </div>
             </div>
 
@@ -620,12 +830,34 @@ export default function RedefineArchPage() {
                               <span>•</span>
                               <span>Downtime: <strong className="text-gray-300">{rec.downtime_required || 'None'}</strong></span>
                             </div>
-                            <button
-                              onClick={() => navigate('/auto-remediate')}
-                              className="text-xs font-semibold text-purple-400 hover:text-purple-300 flex items-center gap-1"
-                            >
-                              Remediate in AutoRemediate <ArrowRightIcon className="w-3.5 h-3.5" />
-                            </button>
+                            <div className="flex items-center gap-2">
+                              <button
+                                onClick={() => handleGenerateScripts(rec.id)}
+                                disabled={generatingScriptId === rec.id}
+                                className="px-3 py-1.5 rounded-lg bg-dark-800 hover:bg-dark-700 text-primary-400 hover:text-primary-300 border border-dark-700 text-xs font-medium flex items-center gap-1.5 transition-all shadow-sm"
+                              >
+                                {generatingScriptId === rec.id ? (
+                                  <>
+                                    <div className="w-3 h-3 border-2 border-primary-400 border-t-transparent rounded-full animate-spin" />
+                                    <span>Generating...</span>
+                                  </>
+                                ) : (
+                                  <>
+                                    <DocumentTextIcon className="w-3.5 h-3.5" />
+                                    <span>Generate IaC Script</span>
+                                  </>
+                                )}
+                              </button>
+                              <button
+                                onClick={() => {
+                                  setSelectedRecommendationId(rec.id);
+                                  navigate('/auto-remediate');
+                                }}
+                                className="text-xs font-semibold text-purple-400 hover:text-purple-300 flex items-center gap-1 px-2.5 py-1.5 rounded-lg hover:bg-purple-500/10 transition-colors"
+                              >
+                                Remediate in AutoRemediate <ArrowRightIcon className="w-3.5 h-3.5" />
+                              </button>
+                            </div>
                           </div>
                         </div>
                       )}
@@ -637,7 +869,7 @@ export default function RedefineArchPage() {
 
           {/* Generated Scripts */}
           {(cftResult || terraformResult) && (
-            <div className="card">
+            <div id="generated-iac-scripts" className="card scroll-mt-6">
               <div className="flex items-center justify-between mb-4">
                 <h2 className="text-lg font-semibold text-white flex items-center gap-2">
                   <DocumentTextIcon className="w-5 h-5 text-primary-400" />
@@ -726,11 +958,11 @@ export default function RedefineArchPage() {
                         <ShieldCheckIcon className="w-5 h-5" />
                       </span>
                       <span className="text-xs font-bold uppercase tracking-wider text-emerald-400">
-                        Enterprise 7-Layer Safety Stack Active
+                        Enterprise Safety Protocol Active
                       </span>
                     </div>
                     <p className="text-sm text-gray-200 leading-relaxed">
-                      Deployments are protected by automatic pre-change snapshots, zero deletion policy, automated rollback triggers, and human-in-the-loop approval. No resource will ever be deleted without explicit confirmation.
+                      Deployments are protected by automatic pre-change snapshots, zero deletion policy, automated rollback triggers, and immutable audit logs.
                     </p>
                   </div>
                   <button

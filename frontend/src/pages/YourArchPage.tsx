@@ -6,6 +6,7 @@ import { AWS_REGIONS, ALL_REGIONS_OPTION } from '../config/aws-regions';
 import { RESOURCE_TYPE_COLORS } from '../config/constants';
 import { getServiceIconPath } from '../config/aws-icon-map';
 import ArchitectureDiagram from '../components/ArchitectureDiagram';
+import ProgressBarModal from '../components/ProgressBarModal';
 import toast from 'react-hot-toast';
 import { exportAsDrawioXml } from '../utils/exportDiagram';
 import {
@@ -150,13 +151,14 @@ export default function YourArchPage() {
     roleArn, setRoleArn,
     selectedRegion, setSelectedRegion,
     scanResult, setScanResult,
-    setCurrentStep, setLoading, isLoading,
+    currentStep, setCurrentStep, setLoading, isLoading,
     connectedAccounts, addConnectedAccount, removeConnectedAccount,
     savedScans, saveScan, deleteScan, loadScan, syncScansFromBackend,
     searchQuery, setSearchQuery,
     filterType, setFilterType,
     diagramViewMode, setDiagramViewMode,
     darkMode,
+    user,
   } = useAppStore();
 
   useEffect(() => {
@@ -204,6 +206,14 @@ export default function YourArchPage() {
   // Discovery error state (shows the real failure reason, not a dummy value)
   const [scanError, setScanError] = useState<string | null>(null);
   const [showErrorDetails, setShowErrorDetails] = useState(false);
+  const discoveryCancelledRef = useRef(false);
+
+  function handleCancelDiscovery() {
+    discoveryCancelledRef.current = true;
+    setLoading(false);
+    setCurrentStep('idle');
+    toast('Architecture discovery cancelled', { icon: 'ℹ️' });
+  }
 
   // Tag-based grouping (SOW Section 4.2)
   const [groupByTag, setGroupByTag] = useState('');
@@ -385,20 +395,62 @@ export default function YourArchPage() {
   }
 
   // Persist a completed discovery result to the UI + scan history.
-  function finalizeDiscovery(data: any) {
-    setScanResult(data);
+  function finalizeDiscovery(rawData: any) {
+    if (!rawData) return;
+    let data = rawData;
+    if (data && typeof data === 'object' && 'body' in data) {
+      try {
+        data = typeof data.body === 'string' ? JSON.parse(data.body) : data.body;
+      } catch (e) {
+        console.warn('Could not parse body in finalizeDiscovery:', e);
+      }
+    }
+
+    const safeResources = Array.isArray(data?.resources) ? data.resources : [];
+    const safeRelationships = Array.isArray(data?.relationships) ? data.relationships : [];
+    const safeSummary = data?.summary || {
+      total_resources: safeResources.length,
+      total_relationships: safeRelationships.length,
+      by_type: {},
+      regions_scanned: Array.isArray(data?.regions) ? data.regions : [selectedRegion],
+    };
+    if (!safeSummary.by_type) safeSummary.by_type = {};
+    if (safeSummary.total_resources === undefined) safeSummary.total_resources = safeResources.length;
+
+    const normalizedScanResult = {
+      ...data,
+      scanId: data?.scanId || `scan-${Date.now()}`,
+      accountId: data?.accountId || '',
+      timestamp: data?.timestamp || new Date().toISOString(),
+      resources: safeResources,
+      relationships: safeRelationships,
+      summary: safeSummary,
+    };
+
+    setScanResult(normalizedScanResult);
     setCurrentStep('discovered');
     const accountName = connectedAccounts.find((a) => a.roleArn === roleArn)?.accountName || 'My Account';
+    const totalCount = safeSummary.total_resources ?? safeResources.length;
+
     saveScan({
-      scanId: data.scanId,
+      scanId: normalizedScanResult.scanId,
       accountName,
-      accountId: data.accountId,
+      accountId: normalizedScanResult.accountId,
       region: selectedRegion,
-      timestamp: data.timestamp,
-      resourceCount: data.summary.total_resources,
-      scanResult: data,
+      timestamp: normalizedScanResult.timestamp,
+      resourceCount: totalCount,
+      scanResult: normalizedScanResult,
     });
-    toast.success(`Discovered ${data.summary.total_resources} resources.`);
+
+    if (normalizedScanResult.accountId && !connectedAccounts.some((a) => a.accountId === normalizedScanResult.accountId)) {
+      addConnectedAccount({
+        accountName,
+        accountId: normalizedScanResult.accountId,
+        roleArn,
+        externalId: externalId || undefined,
+      });
+    }
+    toast.success(`Discovered ${totalCount} resources.`);
   }
 
   async function handleDiscover() {
@@ -421,6 +473,8 @@ export default function YourArchPage() {
     setLoading(true);
     setCurrentStep('discovering');
     setScanError(null);
+    useAppStore.getState().setAnalysisResult(null);
+    discoveryCancelledRef.current = false;
 
     try {
       const regions = selectedRegion === 'all'
@@ -432,7 +486,10 @@ export default function YourArchPage() {
         region: selectedRegion === 'all' ? 'us-east-1' : selectedRegion,
         regions,
         ...(externalId && { externalId }),
+        ...(user?.email && { userEmail: user.email }),
       });
+
+      if (discoveryCancelledRef.current) return;
 
       if (response.error) {
         // Show the actual backend error (never a dummy/sample message).
@@ -441,15 +498,17 @@ export default function YourArchPage() {
         setCurrentStep('idle');
       } else {
         const data = response.data as any;
-        // If the scan was handed off asynchronously (e.g. multi-region or large estate)
+        // If the scan was handed off asynchronously via SQS
         if (data.status === 'in_progress' && data.scanId) {
           const scanId = data.scanId;
           const accountId = data.accountId;
-          // Minimal checks with backoff: check after 6s, 12s, 20s, 30s, 42s (total 5 checks max)
-          const delays = [6000, 6000, 8000, 10000, 12000];
+          const intervalMs = Number(data.pollIntervalSeconds) * 1000;
           let done = false;
-          for (const d of delays) {
-            await new Promise((resolve) => setTimeout(resolve, d));
+
+          // Poll every 5s for up to 60 attempts (300 seconds max)
+          for (let attempt = 0; attempt < 60; attempt++) {
+            await new Promise((resolve) => setTimeout(resolve, intervalMs));
+            if (discoveryCancelledRef.current) return;
             const statusRes = await getScanStatus(scanId, accountId);
             if (statusRes.data?.status === 'completed') {
               const fullScan = await getScan(scanId);
@@ -467,7 +526,7 @@ export default function YourArchPage() {
             }
           }
           if (!done) {
-            // Check one last time or load completed scans
+            // Check one last time before stopping
             const finalCheck = await getScan(scanId);
             if (finalCheck.data && !finalCheck.error) {
               finalizeDiscovery(finalCheck.data);
@@ -639,7 +698,7 @@ export default function YourArchPage() {
       mimeType = 'application/json';
     } else {
       const headers = ['Type', 'ID', 'Name', 'Region', 'Status'];
-      const rows = scanResult.resources.map(r => [
+      const rows = (scanResult.resources || []).map(r => [
         r.type, r.id, r.name || '', r.region || '', (r as any).state || (r as any).status || ''
       ]);
       content = [headers.join(','), ...rows.map(r => r.map(v => `"${v}"`).join(','))].join('\n');
@@ -657,17 +716,22 @@ export default function YourArchPage() {
     toast.success(`Downloaded ${filename}`);
   }
 
-  // Filter resources based on search and type
-  const filteredResources = scanResult?.resources.filter(r => {
+  const [filterRegion, setFilterRegion] = useState('all');
+
+  const discoveredRegions = [...new Set((scanResult?.resources || []).map(r => r.region).filter(Boolean))].sort();
+
+  // Filter resources based on search, type, and region
+  const filteredResources = (scanResult?.resources || []).filter(r => {
     const matchesSearch = !searchQuery ||
       r.name?.toLowerCase().includes(searchQuery.toLowerCase()) ||
-      r.id.toLowerCase().includes(searchQuery.toLowerCase()) ||
-      r.type.toLowerCase().includes(searchQuery.toLowerCase());
+      r.id?.toLowerCase().includes(searchQuery.toLowerCase()) ||
+      r.type?.toLowerCase().includes(searchQuery.toLowerCase());
     const matchesType = filterType === 'all' || r.type === filterType;
-    return matchesSearch && matchesType;
-  }) || [];
+    const matchesRegion = filterRegion === 'all' || r.region === filterRegion;
+    return matchesSearch && matchesType && matchesRegion;
+  });
 
-  const resourceTypes = [...new Set(scanResult?.resources.map(r => r.type) || [])].sort();
+  const resourceTypes = [...new Set((scanResult?.resources || []).map(r => r.type) || [])].sort();
 
   const effectiveAccounts = connectedAccounts.length > 0 ? connectedAccounts.map(a => ({
     ...a,
@@ -682,6 +746,14 @@ export default function YourArchPage() {
 
   return (
     <div className="space-y-6 animate-fade-in">
+      {/* Enterprise Clean Progress Modal */}
+      <ProgressBarModal
+        isOpen={isLoading && currentStep === 'discovering'}
+        title="Discovering Cloud Architecture..."
+        subtitle="Scanning connected AWS account resources, please wait..."
+        onCancel={handleCancelDiscovery}
+      />
+
       {/* Page Header */}
       <div className="flex items-center justify-between">
         <div>
@@ -1081,19 +1153,19 @@ export default function YourArchPage() {
               <div>
                 <h2 className="text-lg font-semibold text-white">Current Architecture</h2>
                 <p className="text-sm text-gray-400">
-                  Account: {scanResult.accountId} | Scanned: {new Date(scanResult.timestamp).toLocaleString()} | Resources: {scanResult.summary.total_resources}
+                  Account: {scanResult.accountId} | Scanned: {new Date(scanResult.timestamp).toLocaleString()} | Resources: {scanResult.summary?.total_resources ?? scanResult.resources?.length ?? 0}
                 </p>
               </div>
               <div className="flex items-center gap-2">
                 <button onClick={() => navigate('/redefine')} className="btn-primary flex items-center gap-1 text-sm">
-                  Analyze with WAF →
+                  Analyze with AWS Well-Architected Framework →
                 </button>
               </div>
             </div>
 
             {/* Resource Type Summary */}
             <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-6 gap-3">
-              {Object.entries(scanResult.summary.by_type)
+              {Object.entries(scanResult.summary?.by_type || {})
                 .sort(([, a], [, b]) => (b as number) - (a as number))
                 .map(([type, count]) => (
                   <div
@@ -1113,6 +1185,52 @@ export default function YourArchPage() {
                   </div>
                 ))}
             </div>
+
+            {/* Multi-Region Footprint Breakdown */}
+            {discoveredRegions.length > 1 && (
+              <div className="mt-4 pt-3 border-t border-dark-700/60">
+                <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-1 mb-2.5">
+                  <span className="text-xs font-semibold text-gray-300 uppercase tracking-wider flex items-center gap-1.5">
+                    <GlobeAltIcon className="w-3.5 h-3.5 text-primary-400" />
+                    Discovered Regions ({discoveredRegions.length})
+                  </span>
+                  <span className="text-[11px] text-gray-500">Click a region to filter resources in table or view below</span>
+                </div>
+                <div className="flex flex-wrap gap-2">
+                  {discoveredRegions.map((reg) => {
+                    const count = (scanResult.resources || []).filter((r) => r.region === reg).length;
+                    const isSelected = filterRegion === reg;
+                    return (
+                      <button
+                        key={reg}
+                        onClick={() => {
+                          setFilterRegion(filterRegion === reg ? 'all' : reg);
+                          setViewMode('table');
+                        }}
+                        className={`px-2.5 py-1 rounded-lg text-xs font-medium border transition-all flex items-center gap-1.5 ${
+                          isSelected
+                            ? 'bg-primary-500/20 border-primary-500 text-primary-300 shadow-sm'
+                            : 'bg-dark-900 border-dark-700 text-gray-300 hover:border-dark-600 hover:text-white'
+                        }`}
+                        title={`Filter to ${reg}`}
+                      >
+                        <span className="w-2 h-2 rounded-full bg-emerald-400" />
+                        <span className="font-mono">{reg}</span>
+                        <span className="px-1.5 py-0.2 rounded bg-dark-800 text-[10px] text-gray-400 font-bold">{count}</span>
+                      </button>
+                    );
+                  })}
+                  {filterRegion !== 'all' && (
+                    <button
+                      onClick={() => setFilterRegion('all')}
+                      className="text-xs text-primary-400 hover:text-primary-300 underline ml-1 self-center"
+                    >
+                      Show All Regions
+                    </button>
+                  )}
+                </div>
+              </div>
+            )}
           </div>
 
           {/* Diagram / Table Section */}
@@ -1226,9 +1344,9 @@ export default function YourArchPage() {
             {viewMode === 'diagram' && (
               <div ref={diagramRef} key={`diagram-${darkMode}-${diagramViewMode}`} className="h-[650px] w-full rounded-xl overflow-hidden border border-dark-700/50">
                 <ArchitectureDiagram
-                  resources={scanResult.resources}
-                  relationships={scanResult.relationships}
-                  servicesFootprint={scanResult.servicesFootprint}
+                  resources={scanResult.resources || []}
+                  relationships={scanResult.relationships || []}
+                  servicesFootprint={scanResult.servicesFootprint || []}
                   viewMode={diagramViewMode}
                   accountId={scanResult.accountId}
                 />
@@ -1263,6 +1381,21 @@ export default function YourArchPage() {
                       ))}
                     </select>
                   </div>
+                  {discoveredRegions.length > 1 && (
+                    <div className="flex items-center gap-1">
+                      <GlobeAltIcon className="w-4 h-4 text-gray-500" />
+                      <select
+                        value={filterRegion}
+                        onChange={(e) => setFilterRegion(e.target.value)}
+                        className="select-field text-sm w-auto"
+                      >
+                        <option value="all">All Regions ({discoveredRegions.length})</option>
+                        {discoveredRegions.map(reg => (
+                          <option key={reg} value={reg}>{reg}</option>
+                        ))}
+                      </select>
+                    </div>
+                  )}
                 </div>
 
                 {/* Resource Table */}
