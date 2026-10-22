@@ -260,7 +260,7 @@ const initialState = {
   backupResult: null,
   selectedPillars: [],
   activeTab: 'dashboard',
-  darkMode: true,
+  darkMode: false,
   sidebarCollapsed: false,
   diagramViewMode: 'logical' as DiagramViewMode,
   searchQuery: '',

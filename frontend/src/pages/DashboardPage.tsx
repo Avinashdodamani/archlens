@@ -81,14 +81,14 @@ export default function DashboardPage() {
         <div className="flex items-center gap-2.5">
           <button
             onClick={() => navigate('/redefine')}
-            className="flex items-center gap-2 px-3.5 py-2 rounded-xl text-xs font-semibold bg-purple-500/10 text-purple-300 hover:bg-purple-500/20 border border-purple-500/30 transition-all shadow-sm"
+            className="flex items-center gap-2 px-3.5 py-2 rounded-lg text-xs font-semibold text-primary-700 bg-primary-50 hover:bg-primary-100 border border-primary-200 transition-all"
           >
-            <SparklesIcon className="w-4 h-4 text-purple-400" />
+            <SparklesIcon className="w-4 h-4" />
             AI Optimization
           </button>
           <button
             onClick={() => navigate('/your-arch')}
-            className="btn-primary flex items-center gap-2 shadow-lg shadow-primary-500/20 text-xs py-2 px-4"
+            className="flex items-center gap-2 px-4 py-2 rounded-lg text-xs font-semibold text-white bg-primary-500 hover:bg-primary-600 transition-colors"
           >
             <ArrowPathIcon className="w-4 h-4" />
             New Scan
@@ -147,10 +147,10 @@ export default function DashboardPage() {
 
         {/* Recommendations */}
         <div className="card bg-gradient-to-br from-dark-800 via-dark-800 to-dark-900 border-dark-600/50 relative overflow-hidden group">
-          <div className="absolute top-0 right-0 w-32 h-32 bg-gradient-to-bl from-purple-500/5 to-transparent rounded-full -mr-10 -mt-10 group-hover:from-purple-500/10 transition-colors" />
+          <div className="absolute top-0 right-0 w-32 h-32 bg-gradient-to-bl from-primary-500/5 to-transparent rounded-full -mr-10 -mt-10 group-hover:from-primary-500/10 transition-colors" />
           <div className="flex items-center gap-4">
-            <div className="p-3.5 bg-gradient-to-br from-purple-500/20 to-purple-600/10 rounded-xl border border-purple-500/20">
-              <BoltIcon className="w-6 h-6 text-purple-400" />
+            <div className="p-3.5 bg-gradient-to-br from-primary-500/20 to-primary-600/10 rounded-xl border border-primary-500/20">
+              <BoltIcon className="w-6 h-6 text-primary-400" />
             </div>
             <div>
               <p className="text-xs text-gray-500 font-semibold uppercase tracking-wider">Recommendations</p>
@@ -186,15 +186,15 @@ export default function DashboardPage() {
 
       {/* AI Executive Intelligence Briefing */}
       {analysisResult && (
-        <div className="card bg-gradient-to-r from-purple-950/40 via-dark-800 to-dark-900 border-purple-500/30 p-5 relative overflow-hidden shadow-xl">
-          <div className="absolute top-0 right-0 w-80 h-full bg-gradient-to-l from-purple-500/10 to-transparent pointer-events-none" />
+        <div className="card bg-gradient-to-r from-primary-950/40 via-dark-800 to-dark-900 border-primary-500/30 p-5 relative overflow-hidden shadow-xl">
+          <div className="absolute top-0 right-0 w-80 h-full bg-gradient-to-l from-primary-500/10 to-transparent pointer-events-none" />
           <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 relative z-10">
             <div className="space-y-1.5 max-w-3xl">
               <div className="flex items-center gap-2">
-                <span className="p-1.5 rounded-lg bg-purple-500/20 text-purple-400 border border-purple-500/30">
+                <span className="p-1.5 rounded-lg bg-primary-500/20 text-primary-400 border border-primary-500/30">
                   <SparklesIcon className="w-4 h-4" />
                 </span>
-                <span className="text-xs font-semibold uppercase tracking-wider text-purple-400">
+                <span className="text-xs font-semibold uppercase tracking-wider text-primary-400">
                   Amazon Bedrock · Architecture Intelligence Briefing
                 </span>
               </div>
@@ -212,7 +212,7 @@ export default function DashboardPage() {
             </div>
             <button
               onClick={() => navigate('/redefine')}
-              className="flex-shrink-0 flex items-center gap-2 px-4 py-2.5 rounded-xl bg-purple-600 text-white font-medium text-xs hover:bg-purple-500 transition-colors shadow-lg shadow-purple-600/20 self-start md:self-center"
+              className="flex-shrink-0 flex items-center gap-2 px-4 py-2.5 rounded-xl bg-primary-600 text-white font-medium text-xs hover:bg-primary-500 transition-colors shadow-lg shadow-primary-600/20 self-start md:self-center"
             >
               <span>Review Recommendations</span>
               <ArrowTrendingUpIcon className="w-4 h-4" />
@@ -470,16 +470,16 @@ export default function DashboardPage() {
 
             <button
               onClick={() => navigate('/redefine')}
-              className="w-full flex items-center gap-3 p-3.5 bg-dark-900/70 rounded-xl border border-dark-700/50 hover:border-purple-500/30 hover:bg-dark-800 transition-all text-left group"
+              className="w-full flex items-center gap-3 p-3.5 bg-dark-900/70 rounded-xl border border-dark-700/50 hover:border-primary-500/30 hover:bg-dark-800 transition-all text-left group"
             >
-              <div className="p-2.5 bg-gradient-to-br from-purple-500/20 to-purple-600/10 rounded-xl border border-purple-500/20 group-hover:shadow-lg group-hover:shadow-purple-500/10 transition-all">
-                <SparklesIcon className="w-4 h-4 text-purple-400" />
+              <div className="p-2.5 bg-gradient-to-br from-primary-500/20 to-primary-600/10 rounded-xl border border-primary-500/20 group-hover:shadow-lg group-hover:shadow-primary-500/10 transition-all">
+                <SparklesIcon className="w-4 h-4 text-primary-400" />
               </div>
               <div className="flex-1">
                 <p className="text-sm font-medium text-white">Analyze with WAF</p>
                 <p className="text-[11px] text-gray-500">AI-powered optimization</p>
               </div>
-              <ArrowTrendingUpIcon className="w-4 h-4 text-gray-600 group-hover:text-purple-400 transition-colors" />
+              <ArrowTrendingUpIcon className="w-4 h-4 text-gray-600 group-hover:text-primary-400 transition-colors" />
             </button>
 
             <button
@@ -540,14 +540,14 @@ export default function DashboardPage() {
           <div className="flex items-center justify-between mb-4">
             <div>
               <h2 className="text-base font-semibold text-white flex items-center gap-2">
-                <SparklesIcon className="w-5 h-5 text-purple-400" />
+                <SparklesIcon className="w-5 h-5 text-primary-400" />
                 Priority Recommendations
               </h2>
               <p className="text-xs text-gray-400 mt-0.5">Top AI-identified optimization opportunities requiring engineering attention</p>
             </div>
             <button
               onClick={() => navigate('/redefine')}
-              className="text-xs text-purple-400 hover:text-purple-300 font-semibold flex items-center gap-1"
+              className="text-xs text-primary-400 hover:text-primary-300 font-semibold flex items-center gap-1"
             >
               View all ({analysisResult.analysis.recommendations.length}) →
             </button>
@@ -559,7 +559,7 @@ export default function DashboardPage() {
                 <div
                   key={rec.id}
                   onClick={() => navigate('/redefine')}
-                  className="p-4 rounded-xl bg-dark-900/80 border border-dark-700/70 hover:border-purple-500/40 hover:bg-dark-800/60 transition-all cursor-pointer group flex flex-col justify-between"
+                  className="p-4 rounded-xl bg-dark-900/80 border border-dark-700/70 hover:border-primary-500/40 hover:bg-dark-800/60 transition-all cursor-pointer group flex flex-col justify-between"
                 >
                   <div>
                     <div className="flex items-center justify-between gap-2 mb-2">
@@ -574,7 +574,7 @@ export default function DashboardPage() {
                       </span>
                       <span className="text-[11px] text-gray-400 font-medium truncate">{rec.pillar}</span>
                     </div>
-                    <h3 className="text-sm font-semibold text-white group-hover:text-purple-300 transition-colors line-clamp-1 mb-1">
+                    <h3 className="text-sm font-semibold text-white group-hover:text-primary-300 transition-colors line-clamp-1 mb-1">
                       {rec.title}
                     </h3>
                     <p className="text-xs text-gray-400 line-clamp-2 leading-relaxed">
@@ -587,7 +587,7 @@ export default function DashboardPage() {
                     ) : (
                       <span className="text-gray-400">{rec.effort_hours || 2}h effort</span>
                     )}
-                    <span className="text-purple-400 font-medium group-hover:translate-x-0.5 transition-transform inline-flex items-center gap-1">
+                    <span className="text-primary-400 font-medium group-hover:translate-x-0.5 transition-transform inline-flex items-center gap-1">
                       Review <ArrowTrendingUpIcon className="w-3 h-3" />
                     </span>
                   </div>

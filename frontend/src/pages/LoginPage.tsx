@@ -3,15 +3,14 @@ import { signIn, signUp, confirmSignUp, fetchUserAttributes, resetPassword, conf
 import { useAppStore } from '../store/useAppStore';
 import toast from 'react-hot-toast';
 import {
-  ShieldCheckIcon, EyeIcon, EyeSlashIcon,
-  CubeTransparentIcon, SparklesIcon, BoltIcon, LockClosedIcon, ChartBarIcon,
+  ShieldCheckIcon, EyeIcon, EyeSlashIcon, UserIcon, LockClosedIcon,
+  SunIcon, MoonIcon,
 } from '@heroicons/react/24/outline';
-import type { ComponentType, SVGProps } from 'react';
 
 type AuthMode = 'login' | 'signup' | 'confirm' | 'forgot' | 'reset';
 
 export default function LoginPage() {
-  const { setAuth } = useAppStore();
+  const { setAuth, darkMode, toggleDarkMode } = useAppStore();
   const [mode, setMode] = useState<AuthMode>('login');
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
@@ -122,356 +121,200 @@ export default function LoginPage() {
     }
   }
 
+  const titleMap: Record<AuthMode, string> = {
+    login: 'Welcome Back',
+    signup: 'Create Account',
+    confirm: 'Verify Email',
+    forgot: 'Reset Password',
+    reset: 'Set New Password',
+  };
+  const subtitleMap: Record<AuthMode, string> = {
+    login: 'Sign in to your account',
+    signup: 'Start optimizing your AWS architecture',
+    confirm: 'Enter the 6-digit code sent to your email',
+    forgot: 'Enter your email and we will send a reset code',
+    reset: 'Enter the code from your email and a new password',
+  };
+
+  // The login screen is always light (matches CloudThat / Security360), independent
+  // of the app's dark-mode preference which only applies to the authenticated app.
+  const page = 'bg-[#fafafd]';
+  const cardCls = 'rounded-2xl p-8 shadow-card border bg-white border-dark-200';
+  const labelCls = 'block text-sm font-medium mb-1.5 text-dark-700';
+  const fieldWrap =
+    'relative flex items-center rounded-lg border bg-white border-dark-300 transition-colors focus-within:border-primary-500 focus-within:ring-2 focus-within:ring-primary-500/30';
+  const inputCls = 'w-full bg-transparent py-2.5 pr-3 text-sm outline-none text-dark-800 placeholder-dark-400';
+  const iconCls = 'w-4 h-4 mx-3 flex-shrink-0 text-dark-400';
+  const submitCls =
+    'w-full py-3 bg-primary-700 hover:bg-primary-800 text-white font-semibold rounded-lg transition-colors duration-200 disabled:opacity-50';
+
+  const Spinner = ({ label }: { label: string }) => (
+    <span className="flex items-center justify-center gap-2">
+      <div className="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin" />
+      {label}
+    </span>
+  );
+
   return (
-    <div className="min-h-screen bg-dark-950 relative overflow-hidden flex flex-col lg:flex-row">
-      {/* Background effects — spans full page */}
-      <div className="absolute inset-0 bg-gradient-to-br from-primary-900/20 via-dark-950 to-blue-900/10" />
-      <div className="absolute top-[-20%] left-[-10%] w-[600px] h-[600px] bg-primary-500/8 rounded-full blur-[120px]" />
-      <div className="absolute bottom-[-20%] right-[-10%] w-[500px] h-[500px] bg-blue-500/6 rounded-full blur-[100px]" />
+    <div className={`min-h-screen flex flex-col ${page}`}>
+      {/* Top bar */}
+      <header className="h-16 flex items-center justify-between px-6 border-b bg-white border-dark-200">
+        <img src="/cloudthat-logo-removebg-preview.png" alt="CloudThat" className="h-9 object-contain" />
+        <button
+          onClick={toggleDarkMode}
+          className="w-9 h-9 flex items-center justify-center rounded-full border border-dark-200 text-primary-700 hover:bg-primary-50 transition-colors"
+          title={darkMode ? 'Light mode' : 'Dark mode'}
+        >
+          {darkMode ? <SunIcon className="w-4 h-4" /> : <MoonIcon className="w-4 h-4" />}
+        </button>
+      </header>
 
-      {/* Left Side — Feature Points */}
-      <div className="relative z-10 w-full lg:w-1/2 flex items-center justify-center p-8 lg:p-12">
-        <div className="max-w-md">
-          <div className="inline-flex items-center gap-2 px-3 py-1 rounded-full bg-primary-500/10 border border-primary-500/20 text-xs font-medium text-primary-400 mb-6">
-            <SparklesIcon className="w-3.5 h-3.5" />
-            <span>AWS Well-Architected Framework · Powered by Amazon Bedrock</span>
-          </div>
-          <h2 className="text-4xl lg:text-5xl font-bold text-white mb-4 tracking-tight leading-[1.1]">
-            Cloud intelligence,<br />simplified.
-          </h2>
-          <p className="text-gray-400 text-base mb-12 leading-relaxed">
-            Discover your AWS architecture, analyze it with AI, identify opportunities for improvement, and review changes before deployment.
-          </p>
-
-          <div className="space-y-6">
-            <FeatureItem
-              Icon={CubeTransparentIcon}
-              title="Architecture discovery"
-              description="Discover and visualize your complete AWS architecture with a single scan."
-            />
-            <FeatureItem
-              Icon={SparklesIcon}
-              title="AI-powered analysis"
-              description="Evaluate your architecture against all six AWS Well-Architected Framework pillars."
-            />
-            <FeatureItem
-              Icon={BoltIcon}
-              title="One-click remediation"
-              description="Auto-generate CloudFormation and Terraform scripts, then deploy changes safely."
-            />
-            <FeatureItem
-              Icon={LockClosedIcon}
-              title="Safe change management"
-              description="Review and validate proposed changes with rollback support where available."
-            />
-            <FeatureItem
-              Icon={ChartBarIcon}
-              title="Continuous insights"
-              description="Track scan history, architecture health scores, and cost savings over time."
-            />
-          </div>
-        </div>
-      </div>
-
-      {/* Right Side — Login Form */}
-      <div className="relative z-10 w-full lg:w-1/2 flex items-center justify-center p-8">
+      {/* Centered card */}
+      <div className="flex-1 flex items-center justify-center p-6">
         <div className="w-full max-w-md">
-          {/* Logo & Branding */}
-          <div className="text-center mb-8">
-            <div className="w-16 h-16 bg-gradient-to-br from-primary-500 to-blue-600 rounded-2xl flex items-center justify-center mx-auto mb-5 shadow-2xl shadow-primary-500/30">
-              <span className="text-2xl font-bold text-white">AL</span>
-            </div>
-            <h1 className="text-3xl font-bold text-white tracking-tight">ArchLens</h1>
-            <p className="text-sm text-gray-400 mt-1.5">AI-Powered Cloud Intelligence Platform</p>
-          </div>
+          <div className={cardCls}>
+            <h2 className="text-2xl font-bold text-primary-700 text-center">{titleMap[mode]}</h2>
+            <p className="text-sm text-center mt-1.5 mb-7 text-dark-500">{subtitleMap[mode]}</p>
 
-          {/* Auth Card */}
-          <div className="bg-dark-800/80 backdrop-blur-xl border border-dark-700/50 rounded-2xl p-8 shadow-2xl">
-            <h2 className="text-xl font-bold text-white mb-1">
-              {mode === 'login' && 'Welcome Back'}
-              {mode === 'signup' && 'Create Account'}
-              {mode === 'confirm' && 'Verify Email'}
-              {mode === 'forgot' && 'Reset Password'}
-              {mode === 'reset' && 'Set New Password'}
-            </h2>
-            <p className="text-gray-400 text-sm mb-7">
-              {mode === 'login' && 'Sign in to your cloud intelligence dashboard'}
-              {mode === 'signup' && 'Start optimizing your AWS architecture'}
-              {mode === 'confirm' && 'Enter the 6-digit code sent to your email'}
-              {mode === 'forgot' && 'Enter your email and we will send a reset code'}
-              {mode === 'reset' && 'Enter the code from your email and a new password'}
-            </p>
-
-            {/* Login Form */}
+            {/* Login */}
             {mode === 'login' && (
               <form onSubmit={handleLogin} className="space-y-5">
                 <div>
-                  <label className="block text-sm font-medium text-gray-300 mb-1.5">Email Address</label>
-                  <input
-                    type="email"
-                    value={email}
-                    onChange={(e) => setEmail(e.target.value)}
-                    className="input-field"
-                    placeholder="you@company.com"
-                    required
-                  />
+                  <label className={labelCls}><span className="text-danger">*</span> Username / Email</label>
+                  <div className={fieldWrap}>
+                    <UserIcon className={iconCls} />
+                    <input type="email" value={email} onChange={(e) => setEmail(e.target.value)} className={inputCls} placeholder="Enter your username / email" required />
+                  </div>
                 </div>
                 <div>
-                  <label className="block text-sm font-medium text-gray-300 mb-1.5">Password</label>
-                  <div className="relative">
-                    <input
-                      type={showPassword ? 'text' : 'password'}
-                      value={password}
-                      onChange={(e) => setPassword(e.target.value)}
-                      className="input-field pr-10"
-                      placeholder="Enter your password"
-                      required
-                    />
-                    <button
-                      type="button"
-                      onClick={() => setShowPassword(!showPassword)}
-                      className="absolute right-3 top-1/2 -translate-y-1/2 text-gray-500 hover:text-gray-300 transition-colors"
-                    >
-                      {showPassword ? <EyeSlashIcon className="w-5 h-5" /> : <EyeIcon className="w-5 h-5" />}
+                  <label className={labelCls}><span className="text-danger">*</span> Password</label>
+                  <div className={fieldWrap}>
+                    <LockClosedIcon className={iconCls} />
+                    <input type={showPassword ? 'text' : 'password'} value={password} onChange={(e) => setPassword(e.target.value)} className={inputCls} placeholder="Enter your password" required />
+                    <button type="button" onClick={() => setShowPassword(!showPassword)} className="px-3 text-dark-400 hover:text-dark-600 transition-colors">
+                      {showPassword ? <EyeSlashIcon className="w-4 h-4" /> : <EyeIcon className="w-4 h-4" />}
                     </button>
                   </div>
                   <div className="text-right mt-2">
-                    <button
-                      type="button"
-                      onClick={() => setMode('forgot')}
-                      className="text-xs text-primary-400 hover:text-primary-300 font-medium"
-                    >
-                      Forgot password?
-                    </button>
+                    <button type="button" onClick={() => setMode('forgot')} className="text-xs text-primary-600 hover:text-primary-700 font-semibold">Forgot Password?</button>
                   </div>
                 </div>
-                <button
-                  type="submit"
-                  className="w-full py-3 bg-gradient-to-r from-primary-500 to-blue-600 text-white font-semibold rounded-xl hover:from-primary-600 hover:to-blue-700 transition-all duration-200 shadow-lg shadow-primary-500/20 disabled:opacity-50"
-                  disabled={loading}
-                >
-                  {loading ? (
-                    <span className="flex items-center justify-center gap-2">
-                      <div className="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin" />
-                      Signing in...
-                    </span>
-                  ) : 'Sign In'}
+                <button type="submit" className={submitCls} disabled={loading}>
+                  {loading ? <Spinner label="Signing in..." /> : 'Sign In'}
                 </button>
               </form>
             )}
 
-            {/* Forgot Password Form */}
+            {/* Forgot */}
             {mode === 'forgot' && (
               <form onSubmit={handleForgot} className="space-y-5">
                 <div>
-                  <label className="block text-sm font-medium text-gray-300 mb-1.5">Email Address</label>
-                  <input
-                    type="email"
-                    value={email}
-                    onChange={(e) => setEmail(e.target.value)}
-                    className="input-field"
-                    placeholder="you@company.com"
-                    required
-                  />
-                  <p className="text-xs text-gray-500 mt-1.5">Enter the email you used to sign up. We will send a reset code.</p>
+                  <label className={labelCls}><span className="text-danger">*</span> Email</label>
+                  <div className={fieldWrap}>
+                    <UserIcon className={iconCls} />
+                    <input type="email" value={email} onChange={(e) => setEmail(e.target.value)} className={inputCls} placeholder="Enter your email" required />
+                  </div>
+                  <p className="text-xs mt-1.5 text-dark-400">Enter the email you used to sign up. We will send a reset code.</p>
                 </div>
-                <button
-                  type="submit"
-                  className="w-full py-3 bg-gradient-to-r from-primary-500 to-blue-600 text-white font-semibold rounded-xl hover:from-primary-600 hover:to-blue-700 transition-all duration-200 shadow-lg shadow-primary-500/20 disabled:opacity-50"
-                  disabled={loading}
-                >
-                  {loading ? (
-                    <span className="flex items-center justify-center gap-2">
-                      <div className="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin" />
-                      Sending code...
-                    </span>
-                  ) : 'Send reset code'}
+                <button type="submit" className={submitCls} disabled={loading}>
+                  {loading ? <Spinner label="Sending code..." /> : 'Send reset code'}
                 </button>
               </form>
             )}
 
-            {/* Reset Password Form */}
+            {/* Reset */}
             {mode === 'reset' && (
               <form onSubmit={handleReset} className="space-y-5">
                 <div>
-                  <label className="block text-sm font-medium text-gray-300 mb-1.5">Reset Code</label>
-                  <input
-                    type="text"
-                    value={confirmCode}
-                    onChange={(e) => setConfirmCode(e.target.value)}
-                    className="input-field text-center text-2xl tracking-[0.3em] font-mono"
-                    placeholder="000000"
-                    required
-                    maxLength={6}
-                  />
-                  <p className="text-xs text-gray-500 mt-2 text-center">
-                    Code sent to <span className="text-primary-400">{email}</span>
-                  </p>
+                  <label className={labelCls}><span className="text-danger">*</span> Reset Code</label>
+                  <div className={fieldWrap}>
+                    <input type="text" value={confirmCode} onChange={(e) => setConfirmCode(e.target.value)} className={`${inputCls} pl-3 text-center text-xl tracking-[0.3em] font-mono`} placeholder="000000" required maxLength={6} />
+                  </div>
+                  <p className="text-xs mt-2 text-center text-dark-400">Code sent to <span className="text-primary-600">{email}</span></p>
                 </div>
                 <div>
-                  <label className="block text-sm font-medium text-gray-300 mb-1.5">New Password</label>
-                  <input
-                    type="password"
-                    value={password}
-                    onChange={(e) => setPassword(e.target.value)}
-                    className="input-field"
-                    placeholder="Min 8 characters"
-                    required
-                    minLength={8}
-                  />
-                  <p className="text-xs text-gray-500 mt-1.5">Uppercase, lowercase, number and special character required.</p>
+                  <label className={labelCls}><span className="text-danger">*</span> New Password</label>
+                  <div className={fieldWrap}>
+                    <LockClosedIcon className={iconCls} />
+                    <input type="password" value={password} onChange={(e) => setPassword(e.target.value)} className={inputCls} placeholder="Min 8 characters" required minLength={8} />
+                  </div>
+                  <p className="text-xs mt-1.5 text-dark-400">Uppercase, lowercase, number and special character required.</p>
                 </div>
-                <button
-                  type="submit"
-                  className="w-full py-3 bg-gradient-to-r from-primary-500 to-blue-600 text-white font-semibold rounded-xl hover:from-primary-600 hover:to-blue-700 transition-all duration-200 shadow-lg shadow-primary-500/20 disabled:opacity-50"
-                  disabled={loading}
-                >
-                  {loading ? (
-                    <span className="flex items-center justify-center gap-2">
-                      <div className="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin" />
-                      Updating...
-                    </span>
-                  ) : 'Change password'}
+                <button type="submit" className={submitCls} disabled={loading}>
+                  {loading ? <Spinner label="Updating..." /> : 'Change password'}
                 </button>
               </form>
             )}
 
-            {/* Signup Form */}
+            {/* Signup */}
             {mode === 'signup' && (
               <form onSubmit={handleSignUp} className="space-y-5">
                 <div>
-                  <label className="block text-sm font-medium text-gray-300 mb-1.5">Full Name</label>
-                  <input
-                    type="text"
-                    value={name}
-                    onChange={(e) => setName(e.target.value)}
-                    className="input-field"
-                    placeholder="John Doe"
-                    required
-                  />
+                  <label className={labelCls}><span className="text-danger">*</span> Full Name</label>
+                  <div className={fieldWrap}>
+                    <UserIcon className={iconCls} />
+                    <input type="text" value={name} onChange={(e) => setName(e.target.value)} className={inputCls} placeholder="John Doe" required />
+                  </div>
                 </div>
                 <div>
-                  <label className="block text-sm font-medium text-gray-300 mb-1.5">Email Address</label>
-                  <input
-                    type="email"
-                    value={email}
-                    onChange={(e) => setEmail(e.target.value)}
-                    className="input-field"
-                    placeholder="you@company.com"
-                    required
-                  />
+                  <label className={labelCls}><span className="text-danger">*</span> Email</label>
+                  <div className={fieldWrap}>
+                    <UserIcon className={iconCls} />
+                    <input type="email" value={email} onChange={(e) => setEmail(e.target.value)} className={inputCls} placeholder="you@company.com" required />
+                  </div>
                 </div>
                 <div>
-                  <label className="block text-sm font-medium text-gray-300 mb-1.5">Password</label>
-                  <input
-                    type="password"
-                    value={password}
-                    onChange={(e) => setPassword(e.target.value)}
-                    className="input-field"
-                    placeholder="Min 8 characters"
-                    required
-                    minLength={8}
-                  />
-                  <p className="text-xs text-gray-500 mt-1.5">Uppercase, lowercase, number & special character required</p>
+                  <label className={labelCls}><span className="text-danger">*</span> Password</label>
+                  <div className={fieldWrap}>
+                    <LockClosedIcon className={iconCls} />
+                    <input type="password" value={password} onChange={(e) => setPassword(e.target.value)} className={inputCls} placeholder="Min 8 characters" required minLength={8} />
+                  </div>
+                  <p className="text-xs mt-1.5 text-dark-400">Uppercase, lowercase, number & special character required</p>
                 </div>
-                <button
-                  type="submit"
-                  className="w-full py-3 bg-gradient-to-r from-primary-500 to-blue-600 text-white font-semibold rounded-xl hover:from-primary-600 hover:to-blue-700 transition-all duration-200 shadow-lg shadow-primary-500/20 disabled:opacity-50"
-                  disabled={loading}
-                >
-                  {loading ? (
-                    <span className="flex items-center justify-center gap-2">
-                      <div className="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin" />
-                      Creating Account...
-                    </span>
-                  ) : 'Create Account'}
+                <button type="submit" className={submitCls} disabled={loading}>
+                  {loading ? <Spinner label="Creating Account..." /> : 'Create Account'}
                 </button>
               </form>
             )}
 
-            {/* Confirm Form */}
+            {/* Confirm */}
             {mode === 'confirm' && (
               <form onSubmit={handleConfirm} className="space-y-5">
                 <div>
-                  <label className="block text-sm font-medium text-gray-300 mb-1.5">Verification Code</label>
-                  <input
-                    type="text"
-                    value={confirmCode}
-                    onChange={(e) => setConfirmCode(e.target.value)}
-                    className="input-field text-center text-2xl tracking-[0.3em] font-mono"
-                    placeholder="000000"
-                    required
-                    maxLength={6}
-                  />
-                  <p className="text-xs text-gray-500 mt-2 text-center">
-                    Code sent to <span className="text-primary-400">{email}</span>
-                  </p>
+                  <label className={labelCls}><span className="text-danger">*</span> Verification Code</label>
+                  <div className={fieldWrap}>
+                    <input type="text" value={confirmCode} onChange={(e) => setConfirmCode(e.target.value)} className={`${inputCls} pl-3 text-center text-xl tracking-[0.3em] font-mono`} placeholder="000000" required maxLength={6} />
+                  </div>
+                  <p className="text-xs mt-2 text-center text-dark-400">Code sent to <span className="text-primary-600">{email}</span></p>
                 </div>
-                <button
-                  type="submit"
-                  className="w-full py-3 bg-gradient-to-r from-primary-500 to-blue-600 text-white font-semibold rounded-xl hover:from-primary-600 hover:to-blue-700 transition-all duration-200 shadow-lg shadow-primary-500/20 disabled:opacity-50"
-                  disabled={loading}
-                >
-                  {loading ? (
-                    <span className="flex items-center justify-center gap-2">
-                      <div className="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin" />
-                      Verifying...
-                    </span>
-                  ) : 'Verify & Continue'}
+                <button type="submit" className={submitCls} disabled={loading}>
+                  {loading ? <Spinner label="Verifying..." /> : 'Verify & Continue'}
                 </button>
               </form>
             )}
 
-            {/* Toggle Mode */}
+            {/* Toggle mode */}
             <div className="mt-7 text-center">
-              {mode === 'login' && (
-                <p className="text-sm text-gray-400">
-                  New to ArchLens?{' '}
-                  <button onClick={() => setMode('signup')} className="text-primary-400 hover:text-primary-300 font-semibold transition-colors">
-                    Create an account
-                  </button>
+              {mode === 'login' ? (
+                <p className="text-sm text-dark-500">
+                  Don't have an account?{' '}
+                  <button onClick={() => setMode('signup')} className="text-primary-600 hover:text-primary-700 font-semibold transition-colors">Sign Up</button>
                 </p>
-              )}
-              {(mode === 'signup' || mode === 'confirm' || mode === 'forgot' || mode === 'reset') && (
-                <p className="text-sm text-gray-400">
+              ) : (
+                <p className="text-sm text-dark-500">
                   Remember your password?{' '}
-                  <button onClick={() => setMode('login')} className="text-primary-400 hover:text-primary-300 font-semibold transition-colors">
-                    Sign in
-                  </button>
+                  <button onClick={() => setMode('login')} className="text-primary-600 hover:text-primary-700 font-semibold transition-colors">Sign in</button>
                 </p>
               )}
             </div>
           </div>
 
-          {/* Security Note */}
-          <div className="mt-5 flex items-center justify-center gap-2 text-xs text-gray-500">
-            <ShieldCheckIcon className="w-3.5 h-3.5 text-gray-500" />
+          {/* Security note */}
+          <div className="mt-5 flex items-center justify-center gap-2 text-xs text-dark-400">
+            <ShieldCheckIcon className="w-3.5 h-3.5" />
             <p>Secured by AWS Cognito</p>
           </div>
         </div>
-      </div>
-
-    </div>
-  );
-}
-
-function FeatureItem({
-  Icon,
-  title,
-  description,
-}: {
-  Icon: ComponentType<SVGProps<SVGSVGElement>>;
-  title: string;
-  description: string;
-}) {
-  return (
-    <div className="flex items-start gap-4">
-      <div className="w-11 h-11 bg-primary-500/10 border border-primary-500/20 rounded-xl flex items-center justify-center flex-shrink-0">
-        <Icon className="w-5 h-5 text-primary-400" />
-      </div>
-      <div>
-        <p className="text-base font-semibold text-white">{title}</p>
-        <p className="text-sm text-gray-400 mt-1 leading-relaxed">{description}</p>
       </div>
     </div>
   );

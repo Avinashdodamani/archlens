@@ -446,11 +446,11 @@ export default function InsightHubPage() {
           </div>
         </div>
 
-        <div className="card relative overflow-hidden group hover:border-purple-500/30 transition-colors">
-          <div className="absolute -bottom-4 -right-4 w-20 h-20 bg-purple-500/5 rounded-full group-hover:bg-purple-500/10 transition-colors" />
+        <div className="card relative overflow-hidden group hover:border-primary-500/30 transition-colors">
+          <div className="absolute -bottom-4 -right-4 w-20 h-20 bg-primary-500/5 rounded-full group-hover:bg-primary-500/10 transition-colors" />
           <div className="flex items-center gap-4">
-            <div className="p-3 bg-purple-500/10 rounded-xl">
-              <CurrencyDollarIcon className="w-6 h-6 text-purple-400" />
+            <div className="p-3 bg-primary-500/10 rounded-xl">
+              <CurrencyDollarIcon className="w-6 h-6 text-primary-400" />
             </div>
             <div>
               <p className="text-xs text-gray-500 font-medium uppercase tracking-wide">Cost Savings</p>

@@ -170,7 +170,7 @@ export default function AiAssistant() {
         const content = trimmed.substring(2);
         return (
           <div key={idx} className="flex items-start gap-1.5 text-xs my-0.5 pl-1 text-gray-200">
-            <span className="text-purple-400 mt-0.5">•</span>
+            <span className="text-primary-400 mt-0.5">•</span>
             <span dangerouslySetInnerHTML={{ __html: formatInline(content) }} />
           </div>
         );
@@ -180,7 +180,7 @@ export default function AiAssistant() {
       if (trimmed.startsWith('### ') || trimmed.startsWith('## ') || trimmed.startsWith('# ')) {
         const headerText = trimmed.replace(/^#+\s*/, '');
         return (
-          <p key={idx} className="text-xs font-bold text-purple-300 mt-2 mb-1">
+          <p key={idx} className="text-xs font-bold text-primary-300 mt-2 mb-1">
             {headerText}
           </p>
         );
@@ -199,8 +199,8 @@ export default function AiAssistant() {
   function formatInline(str: string): string {
     return str
       .replace(/\*\*(.*?)\*\*/g, '<strong class="text-white font-semibold">$1</strong>')
-      .replace(/\*(.*?)\*/g, '<em class="text-purple-200">$1</em>')
-      .replace(/`([^`]+)`/g, '<code class="px-1 py-0.5 bg-dark-950 rounded text-purple-300 font-mono text-[11px]">$1</code>');
+      .replace(/\*(.*?)\*/g, '<em class="text-primary-200">$1</em>')
+      .replace(/`([^`]+)`/g, '<code class="px-1 py-0.5 bg-dark-950 rounded text-primary-300 font-mono text-[11px]">$1</code>');
   }
 
   return (
@@ -222,7 +222,7 @@ export default function AiAssistant() {
       {/* Floating Chat Modal */}
       {open && (
         <div
-          className="fixed bottom-24 right-6 z-50 w-96 max-w-[calc(100vw-3rem)] bg-dark-900 border border-purple-500/30 rounded-2xl shadow-2xl overflow-hidden flex flex-col animate-fade-in"
+          className="fixed bottom-24 right-6 z-50 w-96 max-w-[calc(100vw-3rem)] bg-dark-900 border border-primary-500/30 rounded-2xl shadow-2xl overflow-hidden flex flex-col animate-fade-in"
           style={{ height: '540px', maxHeight: '75vh' }}
         >
           {/* Header */}
@@ -233,13 +233,13 @@ export default function AiAssistant() {
             }}
           >
             <div className="flex items-center gap-2.5">
-              <div className="p-1.5 bg-purple-600/30 border border-purple-400/40 rounded-lg">
-                <SparklesIcon className="w-4 h-4 text-purple-300" />
+              <div className="p-1.5 bg-primary-600/30 border border-primary-400/40 rounded-lg">
+                <SparklesIcon className="w-4 h-4 text-primary-300" />
               </div>
               <div>
                 <p className="text-sm font-bold text-white flex items-center gap-1.5">
                   ArchLens AI
-                  <span className="px-1.5 py-0.5 rounded text-[9px] font-semibold bg-purple-500/20 text-purple-300 border border-purple-500/30 flex items-center gap-0.5">
+                  <span className="px-1.5 py-0.5 rounded text-[9px] font-semibold bg-primary-500/20 text-primary-300 border border-primary-500/30 flex items-center gap-0.5">
                     <CpuChipIcon className="w-2.5 h-2.5" /> Amazon Bedrock
                   </span>
                 </p>
@@ -273,11 +273,11 @@ export default function AiAssistant() {
           {scanResult && (
             <div className="bg-dark-950/80 px-3 py-1.5 border-b border-dark-800 text-[10px] text-gray-400 flex items-center justify-between">
               <span className="truncate">
-                Account: <code className="text-purple-300">{scanResult.accountId}</code> ({scanResult.regions.join(', ')})
+                Account: <code className="text-primary-300">{scanResult.accountId}</code> ({scanResult.regions.join(', ')})
               </span>
               <button
                 onClick={() => navigate('/redefine')}
-                className="text-purple-400 hover:text-purple-300 flex items-center gap-0.5 flex-shrink-0 ml-2"
+                className="text-primary-400 hover:text-primary-300 flex items-center gap-0.5 flex-shrink-0 ml-2"
               >
                 Full Analysis <ArrowTopRightOnSquareIcon className="w-2.5 h-2.5" />
               </button>
@@ -294,7 +294,7 @@ export default function AiAssistant() {
                 <div
                   className={`max-w-[88%] rounded-2xl px-3.5 py-2.5 text-xs shadow-md ${
                     m.role === 'user'
-                      ? 'bg-purple-600 text-white rounded-br-xs'
+                      ? 'bg-primary-600 text-white rounded-br-xs'
                       : 'bg-dark-800 text-gray-200 border border-dark-700/80 rounded-bl-xs'
                   }`}
                 >
@@ -315,13 +315,13 @@ export default function AiAssistant() {
             {/* Typing indicator */}
             {isTyping && (
               <div className="flex items-start gap-2">
-                <div className="bg-dark-800 border border-dark-700/80 rounded-2xl rounded-bl-xs px-3.5 py-2 text-xs flex items-center gap-1.5 text-purple-300">
+                <div className="bg-dark-800 border border-dark-700/80 rounded-2xl rounded-bl-xs px-3.5 py-2 text-xs flex items-center gap-1.5 text-primary-300">
                   <SparklesIcon className="w-3.5 h-3.5 animate-spin" />
                   <span>Bedrock is thinking...</span>
                   <div className="flex gap-1 ml-1">
-                    <span className="w-1.5 h-1.5 bg-purple-400 rounded-full animate-bounce" style={{ animationDelay: '0ms' }} />
-                    <span className="w-1.5 h-1.5 bg-purple-400 rounded-full animate-bounce" style={{ animationDelay: '150ms' }} />
-                    <span className="w-1.5 h-1.5 bg-purple-400 rounded-full animate-bounce" style={{ animationDelay: '300ms' }} />
+                    <span className="w-1.5 h-1.5 bg-primary-400 rounded-full animate-bounce" style={{ animationDelay: '0ms' }} />
+                    <span className="w-1.5 h-1.5 bg-primary-400 rounded-full animate-bounce" style={{ animationDelay: '150ms' }} />
+                    <span className="w-1.5 h-1.5 bg-primary-400 rounded-full animate-bounce" style={{ animationDelay: '300ms' }} />
                   </div>
                 </div>
               </div>
@@ -336,7 +336,7 @@ export default function AiAssistant() {
                 <button
                   key={idx}
                   onClick={() => handleSend(prompt)}
-                  className="text-[10px] px-2 py-1 rounded-full bg-dark-800 hover:bg-purple-900/40 border border-dark-700 hover:border-purple-500/50 text-gray-300 hover:text-purple-200 transition-colors text-left"
+                  className="text-[10px] px-2 py-1 rounded-full bg-dark-800 hover:bg-primary-900/40 border border-dark-700 hover:border-primary-500/50 text-gray-300 hover:text-primary-200 transition-colors text-left"
                 >
                   {prompt}
                 </button>
@@ -353,7 +353,7 @@ export default function AiAssistant() {
               onKeyDown={(e) => e.key === 'Enter' && !e.shiftKey && handleSend()}
               placeholder="Ask Amazon Bedrock about your architecture…"
               disabled={isTyping}
-              className="flex-1 bg-dark-950 border border-dark-700 focus:border-purple-500 rounded-xl px-3 py-2 text-xs text-white placeholder-gray-500 outline-none transition-colors"
+              className="flex-1 bg-dark-950 border border-dark-700 focus:border-primary-500 rounded-xl px-3 py-2 text-xs text-white placeholder-gray-500 outline-none transition-colors"
             />
             <button
               onClick={() => handleSend()}

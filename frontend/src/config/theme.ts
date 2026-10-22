@@ -7,18 +7,18 @@
  * AWS service ICON colors live in aws-theme.ts and must NOT be overridden.
  */
 
-// ─── Accent colors ──────────────────────────────────────────────────────────
-// Blue = primary (buttons, nav, links). Purple = AI-generated content marker.
+// ─── Accent colors (CloudThat brand) ────────────────────────────────────────
+// Blue = primary (buttons, nav, links). Gold = highlight/AI marker.
 export const ACCENT = {
-  primary: '#1A56DB',
-  primaryHover: '#1648c0',
-  ai: '#8B5CF6', // purple — "AI touched this"
-  aiHover: '#7c3aed',
+  primary: '#2563a8',      // CloudThat blue
+  primaryHover: '#1b4b8f',
+  ai: '#e8a020',           // CloudThat gold — "AI touched this"
+  aiHover: '#d18a12',
 } as const;
 
-/** Blue→purple gradient — ONLY for primary CTAs and the AI assistant bubble. */
-export const CTA_GRADIENT = 'linear-gradient(135deg, #1A56DB 0%, #8B5CF6 100%)';
-export const CTA_GRADIENT_CLASS = 'bg-gradient-to-r from-primary-500 to-[#8B5CF6]';
+/** CloudThat blue gradient — for primary CTAs and the AI assistant bubble. */
+export const CTA_GRADIENT = 'linear-gradient(135deg, #2563a8 0%, #1b4b8f 100%)';
+export const CTA_GRADIENT_CLASS = 'bg-gradient-to-r from-primary-500 to-primary-700';
 
 // ─── Semantic status colors + thresholds ────────────────────────────────────
 // The SAME three colors and thresholds are used everywhere a score/status

@@ -2,11 +2,46 @@
 @tailwind components;
 @tailwind utilities;
 
+/*
+ * CloudThat brand typeface: Proxima Nova (Brand Manual).
+ *
+ * ⚠️ TODO BEFORE GOING LIVE — LICENSING:
+ * Proxima Nova is a PAID font. For the internal demo it is currently loaded
+ * from an UNLICENSED third-party CDN (fonts.cdnfonts.com) via a <link> in
+ * index.html. This MUST be replaced with CloudThat's licensed copy before any
+ * public release:
+ *   1. Remove the fonts.cdnfonts.com <link> in index.html, AND
+ *   2. Either add CloudThat's Adobe Fonts (Typekit) <link>, OR drop the
+ *      licensed .woff2 files into /public/fonts/ and uncomment the blocks below.
+ * The font stack already prefers "Proxima Nova"; Montserrat is the fallback.
+ *
+ * @font-face {
+ *   font-family: 'Proxima Nova';
+ *   src: url('/fonts/ProximaNova-Regular.woff2') format('woff2');
+ *   font-weight: 400; font-style: normal; font-display: swap;
+ * }
+ * @font-face {
+ *   font-family: 'Proxima Nova';
+ *   src: url('/fonts/ProximaNova-Medium.woff2') format('woff2');
+ *   font-weight: 500; font-style: normal; font-display: swap;
+ * }
+ * @font-face {
+ *   font-family: 'Proxima Nova';
+ *   src: url('/fonts/ProximaNova-Semibold.woff2') format('woff2');
+ *   font-weight: 600; font-style: normal; font-display: swap;
+ * }
+ * @font-face {
+ *   font-family: 'Proxima Nova';
+ *   src: url('/fonts/ProximaNova-Bold.woff2') format('woff2');
+ *   font-weight: 700; font-style: normal; font-display: swap;
+ * }
+ */
+
 @layer base {
   :root {
-    /* Accent */
-    --color-primary: #1A56DB;
-    --color-ai: #8B5CF6;
+    /* Accent — CloudThat official brand (Brand Manual 2024) */
+    --color-primary: #20629b; /* Dark Blue — Primary A */
+    --color-ai: #1995ff;      /* Coral Blue — Primary B */
 
     /* Surface / background (single source of truth) */
     --surface-0: #0f172a; /* app background */
@@ -25,19 +60,17 @@
     --color-dark-surface: #111827;
   }
 
-  /* App-wide dotted-grid background texture (dark mode) */
-  .dark body,
-  body {
+  /* App-wide dotted-grid background texture (dark mode only) */
+  .dark body {
     background-image: radial-gradient(circle, rgba(148, 163, 184, 0.07) 1px, transparent 1px);
     background-size: 22px 22px;
     background-attachment: fixed;
   }
 
-  /* Lighter dotted grid in light mode */
+  /* Light mode = CloudThat: clean flat Light Grey (#fafafd) surface */
   html:not(.dark) body {
-    background-image: radial-gradient(circle, rgba(100, 116, 139, 0.10) 1px, transparent 1px);
-    background-size: 22px 22px;
-    background-attachment: fixed;
+    background-image: none;
+    background-color: #fafafd;
   }
 
   /* Dark mode (default) */
@@ -51,10 +84,147 @@
     @apply bg-gray-50 text-gray-900 font-sans;
   }
 
+  /* ── CloudThat light theme: white cards, soft shadow, rounded ── */
   html:not(.dark) .card {
-    @apply bg-white border-gray-200 text-gray-900;
-    box-shadow: 0 1px 3px rgba(0,0,0,0.06);
+    background-color: #ffffff;
+    border-color: #e4e9f2;
+    color: #1f2a37;
+    border-radius: 14px;
+    box-shadow: 0 1px 3px rgba(16, 33, 60, 0.06), 0 1px 2px rgba(16, 33, 60, 0.04);
   }
+
+  /* App content area background — Light Grey */
+  html:not(.dark) main {
+    background-color: #fafafd !important;
+  }
+
+  /* Headings in CloudThat Dark Blue — override the generic text-white→black
+     mapping so page/section titles are on-brand blue. */
+  html:not(.dark) h1,
+  html:not(.dark) h2,
+  html:not(.dark) h3,
+  html:not(.dark) h1.text-white,
+  html:not(.dark) h2.text-white,
+  html:not(.dark) h3.text-white {
+    color: #20629b !important;
+  }
+
+  /* CloudThat "simple as possible": flatten dark gradient cards to clean white.
+     The dashboard uses bg-gradient-to-* from/via/to-dark-* on .card; in light
+     mode we neutralize the gradient so cards are flat white with a soft border. */
+  html:not(.dark) .card.bg-gradient-to-br,
+  html:not(.dark) .card.bg-gradient-to-r,
+  html:not(.dark) .card.bg-gradient-to-b,
+  html:not(.dark) .card.bg-gradient-to-t {
+    background-image: none !important;
+    background-color: #ffffff !important;
+  }
+
+  /* Soft tinted icon chips: dark/10-20% fills read as faint CloudThat blue */
+  html:not(.dark) [class*="from-primary-500/2"],
+  html:not(.dark) [class*="from-primary-500/1"],
+  html:not(.dark) [class*="from-blue-500/2"],
+  html:not(.dark) [class*="from-blue-500/1"],
+  html:not(.dark) [class*="from-cyan-500/2"],
+  html:not(.dark) [class*="from-cyan-500/1"] {
+    background-image: none !important;
+    background-color: #eef5fc !important; /* primary-50 */
+  }
+
+  /* Decorative corner-glow blobs: hide in light mode (flat, clean look) */
+  html:not(.dark) .card .absolute[class*="from-"][class*="/5"],
+  html:not(.dark) .card .absolute[class*="from-"][class*="/10"] {
+    display: none !important;
+  }
+
+  /* Tinted icon container borders → subtle brand border in light mode */
+  html:not(.dark) .border-primary-500\/20,
+  html:not(.dark) .border-blue-500\/20,
+  html:not(.dark) .border-cyan-500\/20 {
+    border-color: #d4e6f6 !important; /* primary-100 */
+  }
+
+  /* Muted "500/600" uppercase labels readable on white */
+  html:not(.dark) .text-gray-500 {
+    color: #6b7987 !important;
+  }
+
+  /* Pill backgrounds that used dark-900 → light grey chip */
+  html:not(.dark) .bg-dark-900 {
+    background-color: #f6f8fa !important;
+  }
+
+  /* Normalize mixed accent icon hues (blue/cyan) to CloudThat blue in light
+     mode so the dashboard reads as one brand, not a rainbow. Greens/reds for
+     status are intentionally preserved. */
+  html:not(.dark) .text-blue-400,
+  html:not(.dark) .text-cyan-400 {
+    color: #20629b !important;
+  }
+
+  /* Metric numbers: strong dark-blue, not pure black */
+  html:not(.dark) .card .text-2xl.text-white,
+  html:not(.dark) .card .text-2xl {
+    color: #17426b;
+  }
+
+  /* Cyan pills/badges → brand blue tint (used in InsightHub schedules etc.) */
+  html:not(.dark) .bg-cyan-500\/10,
+  html:not(.dark) .bg-cyan-500\/20 {
+    background-color: #eef5fc !important;
+  }
+  html:not(.dark) .text-cyan-300,
+  html:not(.dark) .text-cyan-400 {
+    color: #20629b !important;
+  }
+  html:not(.dark) .border-cyan-500\/20,
+  html:not(.dark) .border-cyan-500\/30 {
+    border-color: #d4e6f6 !important;
+  }
+
+  /* Emerald "connected/active" banner → clean teal-tinted white card */
+  html:not(.dark) [class*="from-emerald-500/1"] {
+    background-image: none !important;
+    background-color: #ffffff !important;
+  }
+
+  /* Gradient step chips keep their meaning but flatten to solid brand/status
+     colors in light mode for a crisp look. */
+  html:not(.dark) .bg-gradient-to-br.from-primary-500,
+  html:not(.dark) .bg-gradient-to-r.from-primary-500 {
+    background-image: none !important;
+    background-color: #20629b !important;
+  }
+  html:not(.dark) .bg-gradient-to-br.from-green-500,
+  html:not(.dark) .bg-gradient-to-r.from-green-500 {
+    background-image: none !important;
+    background-color: #009ba7 !important;
+  }
+  html:not(.dark) .bg-gradient-to-br.from-orange-500\/20 {
+    background-image: none !important;
+    background-color: #fdf0e8 !important;
+  }
+
+  /* Progress/fill bars → solid brand blue */
+  html:not(.dark) .bg-gradient-to-r.from-primary-500.to-emerald-500,
+  html:not(.dark) .bg-gradient-to-t.from-primary-600 {
+    background-image: none !important;
+    background-color: #20629b !important;
+  }
+
+  /* Neutral dark tracks → light grey in light mode */
+  html:not(.dark) .bg-dark-700 {
+    background-color: #e4e9f2 !important;
+  }
+
+  /* Status icon hues aligned to brand secondary palette */
+  html:not(.dark) .text-orange-400 { color: #c26437 !important; } /* brand orange */
+  html:not(.dark) .text-emerald-400,
+  html:not(.dark) .text-green-400 { color: #009ba7 !important; }  /* brand teal */
+  html:not(.dark) .bg-emerald-500\/20,
+  html:not(.dark) .bg-green-500\/20 { background-color: #e6f6f7 !important; }
+  html:not(.dark) .text-amber-400,
+  html:not(.dark) .text-yellow-400 { color: #b89a0f !important; } /* readable brand gold */
 
   html:not(.dark) .input-field {
     @apply bg-white border-gray-300 text-gray-900 placeholder-gray-400;
@@ -285,7 +455,7 @@
   .btn-primary {
     @apply px-4 py-2 bg-primary-500 text-white font-medium rounded-lg 
            hover:bg-primary-600 transition-colors duration-200 
-           focus:outline-none focus:ring-2 focus:ring-primary-500 focus:ring-offset-2 focus:ring-offset-dark-900
+           focus:outline-none focus:ring-2 focus:ring-primary-500 focus:ring-offset-2
            disabled:opacity-50 disabled:cursor-not-allowed;
   }
 

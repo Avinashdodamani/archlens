@@ -13,12 +13,17 @@ import InsightHubPage from './pages/InsightHubPage';
 import CallbackPage from './pages/CallbackPage';
 
 function App() {
-  const { isAuthenticated, setAuth, syncScansFromBackend } = useAppStore();
+  const { isAuthenticated, setAuth, syncScansFromBackend, darkMode } = useAppStore();
 
   useEffect(() => {
     checkAuthStatus();
     syncScansFromBackend();
   }, []);
+
+  // Keep the <html> dark class in sync with the store on every change.
+  useEffect(() => {
+    document.documentElement.classList.toggle('dark', darkMode);
+  }, [darkMode]);
 
   async function checkAuthStatus() {
     try {

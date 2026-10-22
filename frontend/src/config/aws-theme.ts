@@ -51,7 +51,7 @@ export const AWS_SERVICE_COLORS: Record<string, string> = {
   // Storage (Endor/Green)
   S3: AWS_COLOR_ENDOR,
 
-  // Database (Nebula/Purple-Pink)
+  // Database (Nebula/primary-Pink)
   RDS: AWS_COLOR_NEBULA,
   Aurora: AWS_COLOR_NEBULA,
   DynamoDB: AWS_COLOR_NEBULA,

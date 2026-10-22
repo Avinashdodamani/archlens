@@ -116,7 +116,7 @@ const GROUP_ICON_FILES: Record<string, string> = {
   AvailabilityZone: 'groups/placeholder-blue-32.svg',
   PublicSubnet: 'groups/public-subnet-32.svg',
   PrivateSubnet: 'groups/private-subnet-32.svg',
-  DatabaseSubnet: 'groups/placeholder-purple-32.svg',
+  DatabaseSubnet: 'groups/placeholder-primary-32.svg',
   SecurityGroup: 'groups/placeholder-red-32.svg',
   AutoScalingGroup: 'groups/auto-scaling-group-32.svg',
   DataCenter: 'groups/corporate-data-center-32.svg',

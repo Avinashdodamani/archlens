@@ -200,8 +200,8 @@ export default function RedefineArchPage() {
       <div className="space-y-6 animate-fade-in">
         <h1 className="text-2xl font-bold text-white">RedefineYourArch</h1>
         <div className="card bg-gradient-to-br from-dark-800 to-dark-900 text-center py-16">
-          <div className="w-16 h-16 bg-gradient-to-br from-purple-500/20 to-purple-600/10 rounded-2xl flex items-center justify-center mx-auto mb-5 border border-purple-500/20">
-            <SparklesIcon className="w-8 h-8 text-purple-400" />
+          <div className="w-16 h-16 bg-gradient-to-br from-primary-500/20 to-primary-600/10 rounded-2xl flex items-center justify-center mx-auto mb-5 border border-primary-500/20">
+            <SparklesIcon className="w-8 h-8 text-primary-400" />
           </div>
           <h2 className="text-lg font-semibold text-white mb-2">No Architecture Data</h2>
           <p className="text-gray-400 text-sm max-w-md mx-auto">Run a discovery scan first from the YourArch tab to analyze your architecture.</p>
@@ -217,8 +217,8 @@ export default function RedefineArchPage() {
         <div>
           <div className="flex flex-wrap items-center gap-2 mb-1">
             <h1 className="text-2xl font-bold text-white tracking-tight">RedefineYourArch</h1>
-            <span className="px-2.5 py-0.5 rounded-full text-[10px] font-bold bg-purple-500/10 text-purple-300 border border-purple-500/30 flex items-center gap-1 shadow-sm">
-              <CpuChipIcon className="w-3 h-3 text-purple-400" />
+            <span className="px-2.5 py-0.5 rounded-full text-[10px] font-bold bg-primary-500/10 text-primary-300 border border-primary-500/30 flex items-center gap-1 shadow-sm">
+              <CpuChipIcon className="w-3 h-3 text-primary-400" />
               Amazon Bedrock
             </span>
 
@@ -295,8 +295,25 @@ export default function RedefineArchPage() {
         </div>
       </div>
 
+      {/* Analysis returned but with no usable analysis payload (backend error / empty) */}
+      {analysisResult && !analysisResult.analysis && (
+        <div className="card border-danger/40">
+          <div className="flex items-start gap-3">
+            <ExclamationTriangleIcon className="w-6 h-6 text-danger flex-shrink-0" />
+            <div>
+              <h2 className="text-lg font-semibold text-danger mb-1">Analysis did not return results</h2>
+              <p className="text-sm text-dark-500">
+                The analysis completed but no recommendations were returned. This usually means Bedrock
+                timed out or the scan had no resources to evaluate. Try running the analysis again, or
+                re-run a fresh discovery scan from the YourArch tab.
+              </p>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* Analysis Results */}
-      {analysisResult && (
+      {analysisResult?.analysis && (
         <>
           {/* Summary */}
           <div className="card">
@@ -447,7 +464,7 @@ export default function RedefineArchPage() {
             <div className="flex flex-col md:flex-row md:items-center justify-between gap-3">
               <div>
                 <h2 className="text-lg font-semibold text-white flex items-center gap-2">
-                  <SparklesIcon className="w-5 h-5 text-purple-400" />
+                  <SparklesIcon className="w-5 h-5 text-primary-400" />
                   Recommendations ({analysisResult.analysis.recommendations?.length || 0})
                 </h2>
                 <p className="text-xs text-gray-400 mt-0.5">
@@ -463,7 +480,7 @@ export default function RedefineArchPage() {
                     value={recSearch}
                     onChange={(e) => setRecSearch(e.target.value)}
                     placeholder="Search recommendations..."
-                    className="bg-dark-900 border border-dark-700 rounded-lg pl-9 pr-3 py-1.5 text-xs text-white placeholder-gray-500 focus:outline-none focus:border-purple-500 w-52"
+                    className="bg-dark-900 border border-dark-700 rounded-lg pl-9 pr-3 py-1.5 text-xs text-white placeholder-gray-500 focus:outline-none focus:border-primary-500 w-52"
                   />
                 </div>
 
@@ -471,7 +488,7 @@ export default function RedefineArchPage() {
                 <select
                   value={recPriorityFilter}
                   onChange={(e) => setRecPriorityFilter(e.target.value)}
-                  className="bg-dark-900 border border-dark-700 rounded-lg px-2.5 py-1.5 text-xs text-gray-300 focus:outline-none focus:border-purple-500"
+                  className="bg-dark-900 border border-dark-700 rounded-lg px-2.5 py-1.5 text-xs text-gray-300 focus:outline-none focus:border-primary-500"
                 >
                   <option value="all">All Priorities</option>
                   <option value="CRITICAL">Critical</option>
@@ -488,7 +505,7 @@ export default function RedefineArchPage() {
                 onClick={() => setRecPillarFilter('all')}
                 className={`px-3 py-1 rounded-full text-xs font-medium transition-all ${
                   recPillarFilter === 'all'
-                    ? 'bg-purple-600 text-white shadow-sm'
+                    ? 'bg-primary-600 text-white shadow-sm'
                     : 'bg-dark-900 text-gray-400 hover:text-white border border-dark-700/60'
                 }`}
               >
@@ -504,7 +521,7 @@ export default function RedefineArchPage() {
                     onClick={() => setRecPillarFilter(recPillarFilter === p.key ? 'all' : p.key)}
                     className={`px-2.5 py-1 rounded-full text-xs font-medium transition-all whitespace-nowrap flex items-center gap-1 ${
                       recPillarFilter === p.key
-                        ? 'bg-purple-600 text-white shadow-sm'
+                        ? 'bg-primary-600 text-white shadow-sm'
                         : 'bg-dark-900 text-gray-400 hover:text-white border border-dark-700/60'
                     }`}
                   >
@@ -622,7 +639,7 @@ export default function RedefineArchPage() {
                             </div>
                             <button
                               onClick={() => navigate('/auto-remediate')}
-                              className="text-xs font-semibold text-purple-400 hover:text-purple-300 flex items-center gap-1"
+                              className="text-xs font-semibold text-primary-400 hover:text-primary-300 flex items-center gap-1"
                             >
                               Remediate in AutoRemediate <ArrowRightIcon className="w-3.5 h-3.5" />
                             </button>

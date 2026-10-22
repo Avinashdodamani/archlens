@@ -120,7 +120,7 @@ export default function NotificationCenter() {
   const toneClass = (t: Notice['tone']) =>
     t === 'danger' ? 'text-red-400 bg-red-500/10'
     : t === 'warning' ? 'text-yellow-400 bg-yellow-500/10'
-    : t === 'ai' ? 'text-purple-400 bg-purple-500/10'
+    : t === 'ai' ? 'text-primary-400 bg-primary-500/10'
     : 'text-blue-400 bg-blue-500/10';
 
   return (
