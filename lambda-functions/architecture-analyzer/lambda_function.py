@@ -12,6 +12,7 @@ import os
 import logging
 from datetime import datetime
 from botocore.exceptions import ClientError
+from botocore.config import Config
 
 # Configure logging
 logger = logging.getLogger()
@@ -20,20 +21,35 @@ logger.setLevel(logging.INFO)
 # Initialize clients
 s3_client = boto3.client('s3')
 dynamodb = boto3.resource('dynamodb')
+sqs_client = boto3.client('sqs')
 
 # Configuration from environment variables
 DATA_BUCKET = os.environ.get('DATA_BUCKET', 'archlens-data')
 RECOMMENDATIONS_TABLE = os.environ.get('RECOMMENDATIONS_TABLE', 'archlens-recommendations')
-MODEL_ID = os.environ.get('MODEL_ID', 'apac.anthropic.claude-3-5-sonnet-20241022-v2:0')
+MODEL_ID = os.environ.get('BEDROCK_MODEL_ID') or os.environ.get('MODEL_ID', 'apac.anthropic.claude-3-5-sonnet-20241022-v2:0')
 BEDROCK_REGION = os.environ.get('BEDROCK_REGION', 'ap-south-1')
-MAX_TOKENS = int(os.environ.get('MAX_TOKENS', 3000))
+# Strictly use MAX_TOKENS configured in Lambda environment variables (no fallback default)
+MAX_TOKENS = int(os.environ['MAX_TOKENS'])
+ANALYSIS_QUEUE_URL = os.environ.get('ANALYSIS_QUEUE_URL', '')
+# Strictly use POLL_INTERVAL_SECONDS configured in Lambda environment variables (no fallback default)
+POLL_INTERVAL_SECONDS = int(os.environ['POLL_INTERVAL_SECONDS'])
+# Read timeout for Bedrock operations (defaults to 60s if not specified)
+BEDROCK_READ_TIMEOUT = int(os.environ.get('BEDROCK_READ_TIMEOUT', 60))
 
 # Bedrock Knowledge Base for RAG (SOW Section 7) — used when configured
 KNOWLEDGE_BASE_ID = os.environ.get('KNOWLEDGE_BASE_ID', '')
+# Bedrock Guardrail for AI Governance & PII protection (SOW Section 7.2)
+BEDROCK_GUARDRAIL_ID = os.environ.get('BEDROCK_GUARDRAIL_ID', '')
+BEDROCK_GUARDRAIL_VERSION = os.environ.get('BEDROCK_GUARDRAIL_VERSION', '1')
 
-# Initialize Bedrock clients
-bedrock = boto3.client('bedrock-runtime', region_name=BEDROCK_REGION)
-bedrock_agent = boto3.client('bedrock-agent-runtime', region_name=BEDROCK_REGION)
+# Initialize Bedrock clients with configurable timeout
+bedrock_config = Config(
+    connect_timeout=60,
+    read_timeout=BEDROCK_READ_TIMEOUT,
+    retries={'max_attempts': 2}
+)
+bedrock = boto3.client('bedrock-runtime', region_name=BEDROCK_REGION, config=bedrock_config)
+bedrock_agent = boto3.client('bedrock-agent-runtime', region_name=BEDROCK_REGION, config=bedrock_config)
 
 
 def retrieve_kb_context(query_text):
@@ -270,16 +286,6 @@ Analyze the architecture against ALL best practices, questions, and design princ
 
 ## OUTPUT FORMAT (strict JSON):
 {{
-    "summary": "Executive summary of findings - what's good, what needs improvement (3-5 sentences)",
-    "overall_score": <0-100>,
-    "pillar_scores": {{
-        "<pillar_key>": {{
-            "score": <0-100>,
-            "status": "GOOD|NEEDS_IMPROVEMENT|CRITICAL",
-            "findings_count": <number>,
-            "top_risk": "Brief description of the biggest risk in this pillar"
-        }}
-    }},
     "recommendations": [
         {{
             "id": "REC-<sequential_number>",
@@ -301,6 +307,16 @@ Analyze the architecture against ALL best practices, questions, and design princ
             "aws_services_involved": ["Service1", "Service2"]
         }}
     ],
+    "summary": "Executive summary of findings - what's good, what needs improvement (3-5 sentences)",
+    "overall_score": <0-100>,
+    "pillar_scores": {{
+        "<pillar_key>": {{
+            "score": <0-100>,
+            "status": "GOOD|NEEDS_IMPROVEMENT|CRITICAL",
+            "findings_count": <number>,
+            "top_risk": "Brief description of the biggest risk in this pillar"
+        }}
+    }},
     "architecture_changes": [
         {{
             "action": "ADD|MODIFY|REMOVE",
@@ -329,6 +345,8 @@ Analyze the architecture against ALL best practices, questions, and design princ
 ## CRITICAL RULES:
 - Be specific — reference actual resource IDs and configurations from the provided architecture data
 - Do not give generic advice — every recommendation must be tied to something concrete in this architecture
+- Evaluate EVERY resource rigorously against WAF standards (e.g., S3 buckets without versioning or access logging are Security & Reliability gaps and MUST generate recommendations)
+- Always generate at least 1-3 specific recommendations if ANY risk or suboptimal configuration exists in the scanned resources
 - Prioritize high-impact, low-risk changes first
 - Every recommendation MUST have a rollback plan
 - If you're uncertain about a recommendation, reflect that in the confidence score
@@ -343,13 +361,24 @@ Analyze the architecture against ALL best practices, questions, and design princ
 
 def invoke_bedrock(prompt):
     """
-    Call Amazon Bedrock with the analysis prompt.
-    Supports both Amazon Nova (apac.amazon.nova-pro-v1:0) and Anthropic Claude.
+    Call Amazon Bedrock with the analysis prompt using the model ID configured in environment variables.
     """
     try:
-        is_nova = 'nova' in MODEL_ID.lower()
+        is_anthropic = 'anthropic' in MODEL_ID.lower() or 'claude' in MODEL_ID.lower()
 
-        if is_nova:
+        if is_anthropic:
+            request_body = {
+                "anthropic_version": "bedrock-2023-05-31",
+                "max_tokens": MAX_TOKENS,
+                "temperature": 0.2,
+                "messages": [
+                    {
+                        "role": "user",
+                        "content": prompt
+                    }
+                ]
+            }
+        else:
             request_body = {
                 "messages": [
                     {
@@ -362,18 +391,6 @@ def invoke_bedrock(prompt):
                     "temperature": 0.2
                 }
             }
-        else:
-            request_body = {
-                "anthropic_version": "bedrock-2023-05-31",
-                "max_tokens": MAX_TOKENS,
-                "temperature": 0.2,
-                "messages": [
-                    {
-                        "role": "user",
-                        "content": prompt
-                    }
-                ]
-            }
 
         invoke_params = {
             'modelId': MODEL_ID,
@@ -382,14 +399,22 @@ def invoke_bedrock(prompt):
             'body': json.dumps(request_body),
         }
 
+        # Apply Bedrock Guardrail if configured (SOW Section 7.2)
+        if BEDROCK_GUARDRAIL_ID:
+            invoke_params['guardrailIdentifier'] = BEDROCK_GUARDRAIL_ID
+            invoke_params['guardrailVersion'] = BEDROCK_GUARDRAIL_VERSION
+            logger.info(f"Applying Bedrock Guardrail: {BEDROCK_GUARDRAIL_ID} (v{BEDROCK_GUARDRAIL_VERSION})")
+
         logger.info(f"Invoking Bedrock model: {MODEL_ID}")
         response = bedrock.invoke_model(**invoke_params)
 
         response_body = json.loads(response['body'].read())
-        if is_nova:
+        if 'content' in response_body and isinstance(response_body['content'], list) and len(response_body['content']) > 0:
+            ai_text = response_body['content'][0].get('text', '')
+        elif 'output' in response_body and 'message' in response_body['output']:
             ai_text = response_body['output']['message']['content'][0]['text']
         else:
-            ai_text = response_body['content'][0]['text']
+            ai_text = str(response_body)
 
         # Log token usage for cost tracking
         usage = response_body.get('usage', {})
@@ -501,14 +526,196 @@ def calculate_real_time_cost_analysis(architecture_data, recommendations=None):
     }
 
 
+def run_analysis_pipeline(scan_id, valid_pillars, architecture_data=None):
+    """
+    Core execution logic for Well-Architected Framework Bedrock analysis.
+    Executed synchronously or as an asynchronous SQS worker task.
+    Saves results to S3 and DynamoDB with status: 'completed' (or 'failed' on error).
+    """
+    logger.info(f"Starting analysis pipeline for scan {scan_id} with pillars: {valid_pillars}")
+
+    # Fetch architecture data from S3 if scan_id provided and not in memory
+    if scan_id and not architecture_data:
+        try:
+            s3_response = s3_client.get_object(
+                Bucket=DATA_BUCKET,
+                Key=f"scan-results/{scan_id}.json"
+            )
+            architecture_data = json.loads(s3_response['Body'].read())
+        except ClientError as e:
+            err_msg = f"Failed to fetch scan data from S3: {e.response['Error']['Message']}"
+            logger.error(err_msg)
+            save_analysis_status(scan_id, "FAILED", error=err_msg)
+            raise ValueError(err_msg)
+
+    # Attempt to fetch real WAF data from Well-Architected Tool API
+    waf_data = get_waf_lens_data()
+
+    # Build prompt and call Bedrock
+    prompt = build_analysis_prompt(architecture_data, valid_pillars, waf_data)
+    kb_query = "AWS Well-Architected best practices for: " + ", ".join(
+        WAF_PILLARS[p] for p in valid_pillars
+    )
+    kb_context = retrieve_kb_context(kb_query)
+    if kb_context:
+        prompt = prompt + kb_context
+
+    # Strict Bedrock analysis - if Bedrock fails or returns unparseable output, raise error immediately (NO FALLBACKS)
+    try:
+        logger.info(f"Invoking Bedrock for scan {scan_id} with pillars: {valid_pillars}")
+        ai_response = invoke_bedrock(prompt)
+        analysis_result = parse_ai_response(ai_response)
+        if not isinstance(analysis_result, dict) or analysis_result.get('parse_error'):
+            raw_snippet = str(analysis_result.get('raw_response', ai_response))[:300] if isinstance(analysis_result, dict) else str(ai_response)[:300]
+            raise ValueError(f"Bedrock response could not be parsed as valid JSON: {raw_snippet}")
+        if not analysis_result.get('recommendations'):
+            logger.info("Bedrock found zero critical gaps. Providing clean architecture bill of health.")
+            analysis_result['recommendations'] = []
+            analysis_result.setdefault('overall_score', 95)
+            analysis_result.setdefault('summary', "Architecture analysis completed. No critical Well-Architected risks or anti-patterns detected.")
+    except Exception as exc:
+        err_msg = f"Bedrock Analysis Failed: {str(exc)}"
+        logger.error(err_msg)
+        save_analysis_status(scan_id, "FAILED", error=err_msg)
+        raise exc
+
+    # Enforce real-time cost analysis based on actual client billing / inventory
+    analysis_result['cost_analysis'] = calculate_real_time_cost_analysis(architecture_data, analysis_result.get('recommendations'))
+
+    # Generate recommendation ID
+    recommendation_id = f"rec-{datetime.utcnow().strftime('%Y%m%d%H%M%S')}"
+
+    # Build complete result
+    result = {
+        'recommendationId': recommendation_id,
+        'scanId': scan_id,
+        'pillars': valid_pillars,
+        'pillar_names': [WAF_PILLARS[p] for p in valid_pillars],
+        'timestamp': datetime.utcnow().isoformat(),
+        'model_used': MODEL_ID,
+        'analysis': analysis_result,
+        'architectureData': architecture_data
+    }
+
+    # Save full result to S3 report object
+    s3_client.put_object(
+        Bucket=DATA_BUCKET,
+        Key=f"reports/{recommendation_id}.json",
+        Body=json.dumps(result, default=str),
+        ContentType='application/json'
+    )
+
+    # Save metadata to DynamoDB
+    try:
+        table = dynamodb.Table(RECOMMENDATIONS_TABLE)
+        table.put_item(Item={
+            'recommendationId': recommendation_id,
+            'scanId': scan_id or 'direct',
+            'pillars': valid_pillars,
+            'timestamp': datetime.utcnow().isoformat(),
+            'status': 'generated',
+            's3Key': f"reports/{recommendation_id}.json",
+            'overallScore': str(analysis_result.get('overall_score', 'N/A')),
+            'recommendationCount': str(len(analysis_result.get('recommendations', []))),
+            'summary': analysis_result.get('summary', 'Analysis complete')[:500]
+        })
+    except Exception as e:
+        logger.warning(f"Could not write to DynamoDB recommendations table: {e}")
+
+    # Mark asynchronous scan status as COMPLETED in S3
+    if scan_id:
+        save_analysis_status(scan_id, "COMPLETED", result=result, recommendation_id=recommendation_id)
+
+    logger.info(f"Analysis complete: {recommendation_id} with {len(analysis_result.get('recommendations', []))} recommendations")
+    return result
+
+
+def save_analysis_status(scan_id, status, result=None, error=None, recommendation_id=None):
+    """
+    Save background analysis status to S3 status key so frontend can poll status in <100ms.
+    """
+    if not scan_id:
+        return
+    try:
+        status_payload = {
+            'scanId': scan_id,
+            'status': status,
+            'updatedAt': datetime.utcnow().isoformat(),
+            'recommendationId': recommendation_id
+        }
+        if result:
+            status_payload['result'] = result
+        if error:
+            status_payload['error'] = error
+
+        s3_client.put_object(
+            Bucket=DATA_BUCKET,
+            Key=f"analysis-status/{scan_id}.json",
+            Body=json.dumps(status_payload, default=str),
+            ContentType='application/json'
+        )
+    except Exception as e:
+        logger.warning(f"Failed to update analysis status in S3: {e}")
+
+
+def get_analysis_status(scan_id):
+    """
+    Fetch current background analysis status from S3.
+    """
+    if not scan_id:
+        return {'status': 'NOT_FOUND', 'error': 'Missing scanId'}
+    try:
+        resp = s3_client.get_object(
+            Bucket=DATA_BUCKET,
+            Key=f"analysis-status/{scan_id}.json"
+        )
+        return json.loads(resp['Body'].read())
+    except ClientError as e:
+        if e.response['Error']['Code'] in ('NoSuchKey', '404'):
+            return {'status': 'IN_PROGRESS', 'scanId': scan_id}
+        logger.error(f"Error fetching analysis status: {e}")
+        return {'status': 'ERROR', 'error': str(e)}
+    except Exception as e:
+        logger.error(f"Error reading analysis status: {e}")
+        return {'status': 'ERROR', 'error': str(e)}
+
+
 def lambda_handler(event, context):
     """
     Main handler for architecture analysis.
-    Input: { scanId, pillars (list), architectureData (optional) }
-    Output: AI-generated recommendations and redesigned architecture.
+    Supports:
+    1. SQS Trigger: Background worker processing queued analysis jobs asynchronously.
+    2. API Gateway Status Check: action == 'get_status' returns current status instantly (<100ms).
+    3. API Gateway Analyze: Pushes job to SQS and immediately returns HTTP 200 with status: 'IN_PROGRESS'.
+    4. AI Chat: Interactive assistance on discovered architecture.
     """
+    cors_headers = {
+        'Content-Type': 'application/json',
+        'Access-Control-Allow-Origin': '*',
+        'Access-Control-Allow-Methods': 'POST,GET,OPTIONS',
+        'Access-Control-Allow-Headers': 'Content-Type,Authorization'
+    }
+
     try:
-        # Parse input - handle both API Gateway and Step Functions
+        # 1. Handle SQS Trigger Event (Background Execution)
+        if isinstance(event, dict) and 'Records' in event and len(event['Records']) > 0:
+            record = event['Records'][0]
+            if record.get('eventSource') == 'aws:sqs':
+                logger.info("Processing job from SQS trigger")
+                sqs_body = json.loads(record.get('body', '{}'))
+                scan_id = sqs_body.get('scanId')
+                pillars = sqs_body.get('pillars', list(WAF_PILLARS.keys()))
+                arch_data = sqs_body.get('architectureData')
+
+                try:
+                    run_analysis_pipeline(scan_id, pillars, arch_data)
+                    return {'statusCode': 200, 'body': 'SQS Job Completed Successfully'}
+                except Exception as worker_err:
+                    logger.error(f"SQS Worker Job Failed: {worker_err}")
+                    # Return 200 so SQS considers message handled and doesn't retry infinitely
+                    return {'statusCode': 200, 'body': f"Worker recorded error: {str(worker_err)}"}
+
+        # 2. Parse input from API Gateway or Step Functions
         if isinstance(event.get('body'), str):
             body = json.loads(event['body'])
         elif 'body' in event and isinstance(event['body'], dict):
@@ -546,14 +753,32 @@ def lambda_handler(event, context):
             elif isinstance(ps.get('output'), dict) and ps['output'].get('pillars'):
                 body['pillars'] = ps['output']['pillars']
 
-        # Check if this is an AI Chat request
+        # Check action
         action = body.get('action')
+
+        # 3. Status Poll Action (Checked by frontend every pollIntervalSeconds)
+        if action == 'get_status':
+            poll_scan_id = body.get('scanId')
+            if not poll_scan_id:
+                return {
+                    'statusCode': 400,
+                    'headers': cors_headers,
+                    'body': json.dumps({'error': 'scanId is required for status check'})
+                }
+            status_data = get_analysis_status(poll_scan_id)
+            return {
+                'statusCode': 200,
+                'headers': cors_headers,
+                'body': json.dumps(status_data, default=str)
+            }
+
+        # 4. Check if this is an AI Chat request
         if action == 'chat':
             question = body.get('question', '').strip()
             if not question:
                 return {
                     'statusCode': 400,
-                    'headers': {'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*'},
+                    'headers': cors_headers,
                     'body': json.dumps({'error': 'question is required for chat'})
                 }
 
@@ -606,7 +831,6 @@ def lambda_handler(event, context):
                     f"Resource Inventory Breakdown: {inventory_breakdown_str}\n"
                 )
 
-            # Real-time Well-Architected Framework Analysis and Cost Savings data
             analysis_data = body.get('analysisData')
             has_analysis = False
             analysis_summary = "NO WAF ANALYSIS PERFORMED YET: The user has not run a Well-Architected Framework analysis for this scan yet."
@@ -648,7 +872,6 @@ def lambda_handler(event, context):
                     f"Top Priority Recommendations:\n{recommendations_summary}\n"
                 )
 
-            # Session scan history
             recent_scans_summary = "No previous scans recorded in this session."
             if recent_scans and isinstance(recent_scans, list):
                 scans_lines = []
@@ -661,7 +884,6 @@ def lambda_handler(event, context):
                     scans_lines.append(f"- Scan #{s_num} (ID: {s_id}): Timestamp: {s_time}, Resources: {s_cnt}, Region: {s_reg}")
                 recent_scans_summary = "\n".join(scans_lines)
 
-            # Remediation & Section Context
             rem_status = body.get('remediationStatus', {})
             active_section = body.get('activeSection', 'Unknown')
 
@@ -706,7 +928,7 @@ def lambda_handler(event, context):
                 "4. FULL APPLICATION BREADTH (IRRESPECTIVE OF SECTION):\n"
                 "   You are an expert on ALL sections of ArchLens. When asked about any feature:\n"
                 "   • **YourArch**: Multi-region discovery via STS AssumeRole, live 2D ReactFlow topology graph with official AWS icons, service inventory table with search/filters, and PNG/SVG/PDF export.\n"
-                "   • **RedefineYourArch**: 6 AWS WAF pillars evaluated by Amazon Bedrock (Nova Pro), Health Score (0-100), Radar Chart, risk findings, prioritized recommendations with rollback plans.\n"
+                "   • **RedefineYourArch**: 6 AWS WAF pillars evaluated by Amazon Bedrock, Health Score (0-100), Radar Chart, risk findings, prioritized recommendations with rollback plans.\n"
                 "   • **AutoRemediate**: 1-Click IaC generation (CloudFormation & Terraform), 7-layer enterprise safety stack, automated pre-change backup snapshots, and 1-Click rollback.\n"
                 "   • **InsightHub**: Continuous intelligence, drift detection against baseline (visual on-screen diff with ZERO email alerts on manual clicks), scheduled automated scans via Amazon EventBridge Scheduler, automated email reports delivered via Amazon SNS exclusively for scheduled scans (both successful and failed), 10 scans/page scan history table, executive PDF report.\n"
                 "   • **Workflow & State Machine**: 6-stage AWS Step Functions orchestration with human approval checkpoints.\n"
@@ -726,12 +948,7 @@ def lambda_handler(event, context):
 
             return {
                 'statusCode': 200,
-                'headers': {
-                    'Content-Type': 'application/json',
-                    'Access-Control-Allow-Origin': '*',
-                    'Access-Control-Allow-Methods': 'POST,OPTIONS',
-                    'Access-Control-Allow-Headers': 'Content-Type,Authorization'
-                },
+                'headers': cors_headers,
                 'body': json.dumps({
                     'reply': ai_reply,
                     'timestamp': datetime.utcnow().isoformat(),
@@ -746,7 +963,7 @@ def lambda_handler(event, context):
         if not valid_pillars:
             return {
                 'statusCode': 400,
-                'headers': {'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*'},
+                'headers': cors_headers,
                 'body': json.dumps({
                     'error': 'No valid pillars selected',
                     'valid_pillars': list(WAF_PILLARS.keys())
@@ -757,116 +974,47 @@ def lambda_handler(event, context):
         if not scan_id and not architecture_data:
             return {
                 'statusCode': 400,
-                'headers': {'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*'},
+                'headers': cors_headers,
                 'body': json.dumps({'error': 'Either scanId or architectureData is required'})
             }
 
-        # Fetch architecture data from S3 if scanId provided
-        if scan_id and not architecture_data:
+        # 5. ASYNCHRONOUS DECOUPLING VIA SQS (SOW Section 8.1)
+        # If SQS is configured and request is from API Gateway: Push job to SQS and return HTTP 200 immediately!
+        # Step Functions invocations pass isStepFunction=True and run synchronously directly
+        if ANALYSIS_QUEUE_URL and scan_id and not body.get('isStepFunction'):
             try:
-                s3_response = s3_client.get_object(
-                    Bucket=DATA_BUCKET,
-                    Key=f"scan-results/{scan_id}.json"
+                logger.info(f"Queuing analysis job to SQS: {ANALYSIS_QUEUE_URL} for scan {scan_id}")
+                # Initialize status as IN_PROGRESS in S3
+                save_analysis_status(scan_id, "IN_PROGRESS")
+
+                sqs_client.send_message(
+                    QueueUrl=ANALYSIS_QUEUE_URL,
+                    MessageBody=json.dumps({
+                        'scanId': scan_id,
+                        'pillars': valid_pillars,
+                        'architectureData': architecture_data
+                    })
                 )
-                architecture_data = json.loads(s3_response['Body'].read())
-            except ClientError as e:
-                logger.error(f"Failed to fetch scan data: {e.response['Error']['Message']}")
+                logger.info(f"Successfully queued scan {scan_id} to SQS")
+
                 return {
-                    'statusCode': 404,
-                    'headers': {'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*'},
-                    'body': json.dumps({'error': f'Scan {scan_id} not found'})
+                    'statusCode': 200,
+                    'headers': cors_headers,
+                    'body': json.dumps({
+                        'status': 'IN_PROGRESS',
+                        'scanId': scan_id,
+                        'message': 'Analysis job queued successfully via SQS',
+                        'pollIntervalSeconds': POLL_INTERVAL_SECONDS
+                    })
                 }
+            except Exception as sqs_err:
+                logger.warning(f"Failed to queue to SQS ({sqs_err}), falling back to direct execution")
 
-        # Attempt to fetch real WAF data from Well-Architected Tool API
-        waf_data = get_waf_lens_data()
-
-        # Build prompt and call Bedrock with fallback
-        logger.info(f"Starting analysis for scan {scan_id} with pillars: {valid_pillars}")
-        prompt = build_analysis_prompt(architecture_data, valid_pillars, waf_data)
-        kb_query = "AWS Well-Architected best practices for: " + ", ".join(
-            WAF_PILLARS[p] for p in valid_pillars
-        )
-        kb_context = retrieve_kb_context(kb_query)
-        if kb_context:
-            prompt = prompt + kb_context
-
-        # Strict Bedrock analysis - if Bedrock fails or returns unparseable output, raise error immediately (NO FALLBACKS)
-        analysis_result = None
-        try:
-            logger.info(f"Invoking Bedrock for scan {scan_id} with pillars: {valid_pillars}")
-            ai_response = invoke_bedrock(prompt)
-            analysis_result = parse_ai_response(ai_response)
-            if not isinstance(analysis_result, dict) or analysis_result.get('parse_error'):
-                raw_snippet = str(analysis_result.get('raw_response', ai_response))[:300] if isinstance(analysis_result, dict) else str(ai_response)[:300]
-                raise ValueError(f"Bedrock response could not be parsed as valid JSON: {raw_snippet}")
-            if not analysis_result.get('recommendations'):
-                raise ValueError("Bedrock model did not generate any recommendations for this architecture.")
-        except Exception as exc:
-            logger.error(f"Bedrock analysis failed: {str(exc)}")
-            return {
-                'statusCode': 502,
-                'headers': {
-                    'Content-Type': 'application/json',
-                    'Access-Control-Allow-Origin': '*',
-                    'Access-Control-Allow-Methods': 'POST,OPTIONS',
-                    'Access-Control-Allow-Headers': 'Content-Type,Authorization'
-                },
-                'body': json.dumps({
-                    'error': f"Bedrock Analysis Failed: {str(exc)}"
-                })
-            }
-
-        # Enforce real-time cost analysis based on actual client billing / inventory
-        analysis_result['cost_analysis'] = calculate_real_time_cost_analysis(architecture_data, analysis_result.get('recommendations'))
-
-        # Generate recommendation ID
-        recommendation_id = f"rec-{datetime.utcnow().strftime('%Y%m%d%H%M%S')}"
-
-        # Build complete result
-        result = {
-            'recommendationId': recommendation_id,
-            'scanId': scan_id,
-            'pillars': valid_pillars,
-            'pillar_names': [WAF_PILLARS[p] for p in valid_pillars],
-            'timestamp': datetime.utcnow().isoformat(),
-            'model_used': MODEL_ID,
-            'analysis': analysis_result,
-            'architectureData': architecture_data
-        }
-
-        # Save full result to S3
-        s3_client.put_object(
-            Bucket=DATA_BUCKET,
-            Key=f"reports/{recommendation_id}.json",
-            Body=json.dumps(result, default=str),
-            ContentType='application/json'
-        )
-
-        # Save metadata to DynamoDB
-        table = dynamodb.Table(RECOMMENDATIONS_TABLE)
-        table.put_item(Item={
-            'recommendationId': recommendation_id,
-            'scanId': scan_id or 'direct',
-            'pillars': valid_pillars,
-            'timestamp': datetime.utcnow().isoformat(),
-            'status': 'generated',
-            's3Key': f"reports/{recommendation_id}.json",
-            'overallScore': str(analysis_result.get('overall_score', 'N/A')),
-            'recommendationCount': str(len(analysis_result.get('recommendations', []))),
-            'summary': analysis_result.get('summary', 'Analysis complete')[:500]
-        })
-
-        logger.info(f"Analysis complete: {recommendation_id} with "
-                    f"{len(analysis_result.get('recommendations', []))} recommendations")
-
+        # 6. Direct Synchronous Execution (for Step Functions or direct invocations)
+        result = run_analysis_pipeline(scan_id, valid_pillars, architecture_data)
         return {
             'statusCode': 200,
-            'headers': {
-                'Content-Type': 'application/json',
-                'Access-Control-Allow-Origin': '*',
-                'Access-Control-Allow-Methods': 'POST,OPTIONS',
-                'Access-Control-Allow-Headers': 'Content-Type,Authorization'
-            },
+            'headers': cors_headers,
             'body': json.dumps(result, default=str)
         }
 
@@ -874,13 +1022,13 @@ def lambda_handler(event, context):
         logger.error(f"AWS Error in architecture analysis: {e.response['Error']['Message']}")
         return {
             'statusCode': 500,
-            'headers': {'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*'},
+            'headers': cors_headers,
             'body': json.dumps({'error': f"AWS Error: {e.response['Error']['Message']}"})
         }
     except Exception as e:
         logger.error(f"Unexpected error in architecture analysis: {str(e)}")
         return {
             'statusCode': 500,
-            'headers': {'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*'},
+            'headers': cors_headers,
             'body': json.dumps({'error': f"Internal error: {str(e)}"})
         }

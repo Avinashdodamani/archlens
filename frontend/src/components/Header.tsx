@@ -12,16 +12,24 @@ import {
 } from '@heroicons/react/24/outline';
 
 export default function Header() {
-  const { user, darkMode, toggleDarkMode, currentStep, setAuth, scanResult, selectedRegion, activeAccountId, connectedAccounts } = useAppStore();
+  const { user, darkMode, toggleDarkMode, currentStep, setAuth, reset, scanResult, selectedRegion, activeAccountId, connectedAccounts } = useAppStore();
   const location = useLocation();
   const navigate = useNavigate();
 
   async function handleSignOut() {
     try {
       await signOut();
-      setAuth(false, null);
     } catch (error) {
       console.error('Sign out error:', error);
+    } finally {
+      localStorage.removeItem('archlens-storage');
+      Object.keys(localStorage).forEach((k) => {
+        if (k.startsWith('archlens-')) {
+          localStorage.removeItem(k);
+        }
+      });
+      reset();
+      setAuth(false, null);
     }
   }
 
@@ -67,7 +75,7 @@ export default function Header() {
   const breadcrumbMap: Record<string, { tab: string; section: string }> = {
     '/': { tab: 'Dashboard', section: 'Executive Command Center' },
     '/your-arch': { tab: 'YourArch', section: 'Architecture Topology & Discovery' },
-    '/redefine': { tab: 'RedefineYourArch', section: 'Bedrock WAF Optimization' },
+    '/redefine': { tab: 'RedefineYourArch', section: 'Bedrock AWS Well-Architected Framework' },
     '/auto-remediate': { tab: 'AutoRemediate', section: 'Safe Staged Implementation' },
     '/insights': { tab: 'InsightHub', section: 'Continuous Intelligence & Schedules' },
   };

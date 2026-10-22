@@ -240,13 +240,12 @@ def create_schedule(body):
 
 def list_schedules(body):
     account_id = body.get('accountId')
-    if account_id:
-        items = _table().query(
-            KeyConditionExpression='accountId = :a',
-            ExpressionAttributeValues={':a': account_id},
-        ).get('Items', [])
-    else:
-        items = _table().scan().get('Items', [])
+    if not account_id:
+        return _resp(200, {'schedules': [], 'count': 0})
+    items = _table().query(
+        KeyConditionExpression='accountId = :a',
+        ExpressionAttributeValues={':a': account_id},
+    ).get('Items', [])
     items.sort(key=lambda x: x.get('createdAt', ''), reverse=True)
     return _resp(200, {'schedules': items, 'count': len(items)})
 
@@ -431,114 +430,126 @@ def run_schedule(body):
         error_msg = str(e)
         logger.error(f"Scheduled discovery execution failed: {e}")
 
+    cf_domain = os.environ.get('CLOUDFRONT_DOMAIN', '')
+    cf_url_line = f"https://{cf_domain}\n" if cf_domain else "ArchLens Management Console\n"
+
     # Process Drift & Send Scheduled Email Notifications
     if discovery_success and discovery_data:
-        scan_id = discovery_data.get('scanId', 'N/A')
-        summary = discovery_data.get('summary', {})
-        total_res = summary.get('total_resources', len(discovery_data.get('resources', [])))
-        scanned_regs = discovery_data.get('regions', regions)
-        by_type = summary.get('by_type', {})
-
-        # Compute drift between latest scan and previous baseline
-        drift_summary = None
         try:
-            drift_resp = lambda_client.invoke(
-                FunctionName=DRIFT_FUNCTION,
-                InvocationType='RequestResponse',
-                Payload=json.dumps({'accountId': account_id}).encode('utf-8'),
-            )
-            drift_payload = json.loads(drift_resp['Payload'].read().decode('utf-8'))
-            drift_body = json.loads(drift_payload.get('body', '{}')) if isinstance(drift_payload.get('body'), str) else drift_payload.get('body', {})
-            drift_obj = drift_body.get('drift')
-            if drift_obj:
-                drift_summary = drift_obj.get('summary')
-        except Exception as de:
-            logger.warning(f"Could not compute drift for scheduled report: {de}")
+            scan_id = discovery_data.get('scanId', 'N/A')
+            summary = discovery_data.get('summary', {})
+            total_res = summary.get('total_resources', len(discovery_data.get('resources', [])))
+            scanned_regs = discovery_data.get('regions', regions)
+            by_type = summary.get('by_type', {})
 
-        top_types = sorted(by_type.items(), key=lambda x: x[1], reverse=True)[:8]
-        breakdown_lines = "\n".join([f"  • {k}: {v}" for k, v in top_types]) if top_types else "  • No resources discovered"
-
-        if drift_summary:
-            has_drift = drift_summary.get('drift_detected', False)
-            drift_lines = (
-                f"• Baseline Status   : Compared with previous scan baseline\n"
-                f"• Resources Added   : {drift_summary.get('added_count', 0)}\n"
-                f"• Resources Removed : {drift_summary.get('removed_count', 0)}\n"
-                f"• Resources Changed : {drift_summary.get('changed_count', 0)}\n"
-                f"• Net Delta         : {drift_summary.get('net_change', 0)}\n"
-                f"• Drift Assessment  : {'⚠️ Changes Detected since last baseline' if has_drift else '✅ Clean (Zero Infrastructure Drift)'}"
-            )
-            subject = f"⚠️ [ArchLens Alert] Scheduled Scan Completed (Changes Detected) - Account {account_id}" if has_drift else f"✅ [ArchLens] Scheduled Scan Completed Successfully - Account {account_id}"
-        else:
-            drift_lines = "• Baseline Status   : Initial baseline scan established"
-            subject = f"✅ [ArchLens] Scheduled Scan Completed Successfully - Account {account_id}"
-
-        regs_str = ', '.join(scanned_regs) if isinstance(scanned_regs, list) else str(scanned_regs)
-        email_body = (
-            f"ArchLens Scheduled Scan Completion Report\n"
-            f"===========================================================\n"
-            f"Status           : SUCCESSFUL\n"
-            f"AWS Account ID   : {account_id}\n"
-            f"Schedule Label   : {schedule_label}\n"
-            f"Scan ID          : {scan_id}\n"
-            f"Completed At     : {now_utc_str} ({now_ist_str})\n"
-            f"Regions Scanned  : {regs_str}\n\n"
-            f"RESOURCE INVENTORY SUMMARY:\n"
-            f"• Total Resources Monitored : {total_res}\n"
-            f"• Top Resource Distribution :\n{breakdown_lines}\n\n"
-            f"INFRASTRUCTURE DRIFT STATUS:\n"
-            f"{drift_lines}\n\n"
-            f"Sign in to the ArchLens Console to explore architecture topology,\n"
-            f"compliance benchmarks, and Well-Architected Framework recommendations:\n"
-            f"{cf_url_line}"
-        )
-
-        if SNS_TOPIC_ARN:
+            # Compute drift between latest scan and previous baseline
+            drift_summary = None
             try:
+                drift_resp = lambda_client.invoke(
+                    FunctionName=DRIFT_FUNCTION,
+                    InvocationType='RequestResponse',
+                    Payload=json.dumps({'accountId': account_id}).encode('utf-8'),
+                )
+                drift_payload = json.loads(drift_resp['Payload'].read().decode('utf-8'))
+                drift_body = json.loads(drift_payload.get('body', '{}')) if isinstance(drift_payload.get('body'), str) else drift_payload.get('body', {})
+                drift_obj = drift_body.get('drift')
+                if drift_obj:
+                    drift_summary = drift_obj.get('summary')
+            except Exception as de:
+                logger.warning(f"Could not compute drift for scheduled report: {de}")
+
+            top_types = sorted(by_type.items(), key=lambda x: x[1], reverse=True)[:8]
+            breakdown_lines = "\n".join([f"  • {k}: {v}" for k, v in top_types]) if top_types else "  • No resources discovered"
+
+            if drift_summary:
+                has_drift = drift_summary.get('drift_detected', False)
+                drift_lines = (
+                    f"- Baseline Reference : Compared with previous scan baseline\n"
+                    f"- Resources Added    : {drift_summary.get('added_count', 0)}\n"
+                    f"- Resources Removed  : {drift_summary.get('removed_count', 0)}\n"
+                    f"- Resources Modified : {drift_summary.get('changed_count', 0)}\n"
+                    f"- Net Delta          : {drift_summary.get('net_change', 0)}\n"
+                    f"- Drift Assessment   : {'Changes detected since last baseline' if has_drift else 'Clean (No infrastructure drift detected)'}"
+                )
+                subject = f"[ArchLens Alert] Scheduled Scan Completed (Changes Detected) - Account {account_id}" if has_drift else f"[ArchLens] Scheduled Scan Completed Successfully - Account {account_id}"
+            else:
+                drift_lines = "- Baseline Reference : Initial baseline scan established"
+                subject = f"[ArchLens] Scheduled Scan Completed Successfully - Account {account_id}"
+
+            regs_str = ', '.join(scanned_regs) if isinstance(scanned_regs, list) else str(scanned_regs)
+            email_body = (
+                f"ArchLens Cloud Intelligence - Scheduled Scan Report\n"
+                f"================================================================================\n"
+                f"EXECUTION SUMMARY\n"
+                f"--------------------------------------------------------------------------------\n"
+                f"Execution Status   : SUCCESSFUL\n"
+                f"AWS Account ID     : {account_id}\n"
+                f"Schedule Label     : {schedule_label}\n"
+                f"Scan Reference ID  : {scan_id}\n"
+                f"Completed At       : {now_utc_str} ({now_ist_str})\n"
+                f"Regions Monitored  : {regs_str}\n\n"
+                f"INVENTORY METRICS\n"
+                f"--------------------------------------------------------------------------------\n"
+                f"Total Resources Monitored : {total_res}\n"
+                f"Top Resource Distribution :\n{breakdown_lines}\n\n"
+                f"INFRASTRUCTURE DRIFT EVALUATION\n"
+                f"--------------------------------------------------------------------------------\n"
+                f"{drift_lines}\n\n"
+                f"Sign in to the ArchLens Console to explore architecture topology, compliance\n"
+                f"benchmarks, and Well-Architected Framework recommendations:\n"
+                f"{cf_url_line}\n"
+                f"================================================================================\n"
+                f"This is an automated system notification delivered via Amazon SNS."
+            )
+
+            if SNS_TOPIC_ARN:
                 sns_client.publish(
                     TopicArn=SNS_TOPIC_ARN,
                     Subject=subject,
                     Message=email_body,
                 )
                 logger.info(f"Published scheduled scan success email to {SNS_TOPIC_ARN}")
-            except Exception as se:
-                logger.warning(f"Failed to publish SNS success email: {se}")
+        except Exception as se:
+            logger.warning(f"Failed to compile or publish SNS success email: {se}")
 
     else:
         # Failure email alert
-        subject = f"🚨 [ArchLens Alert] Scheduled Scan Failed - Account {account_id}"
-        regs_str = ', '.join(regions) if isinstance(regions, list) else str(regions)
-        cf_domain = os.environ.get('CLOUDFRONT_DOMAIN', '')
-        cf_url_line = f"https://{cf_domain}\n" if cf_domain else "ArchLens Management Console\n"
-        email_body = (
-            f"ArchLens Scheduled Scan Failure Alert\n"
-            f"===========================================================\n"
-            f"Status           : FAILED\n"
-            f"AWS Account ID   : {account_id}\n"
-            f"Schedule Label   : {schedule_label}\n"
-            f"Attempted At     : {now_utc_str} ({now_ist_str})\n"
-            f"Target Regions   : {regs_str}\n\n"
-            f"FAILURE REASON:\n"
-            f"{error_msg or 'Unknown execution error'}\n\n"
-            f"TROUBLESHOOTING STEPS:\n"
-            f"1. Verify that the IAM Role ({role_arn}) exists in target account {account_id}.\n"
-            f"2. Ensure the IAM Role trust policy allows ArchLens Lambda Execution Role.\n"
-            f"3. Verify that the role has required ReadOnly permissions.\n\n"
-            f"-----------------------------------------------------------\n"
-            f"Access ArchLens Management Console:\n"
-            f"{cf_url_line}"
-        )
+        try:
+            subject = f"[ArchLens Alert] Scheduled Scan Failed - Account {account_id}"
+            regs_str = ', '.join(regions) if isinstance(regions, list) else str(regions)
+            email_body = (
+                f"ArchLens Cloud Intelligence - Scheduled Scan Failure Alert\n"
+                f"================================================================================\n"
+                f"EXECUTION SUMMARY\n"
+                f"--------------------------------------------------------------------------------\n"
+                f"Execution Status   : FAILED\n"
+                f"AWS Account ID     : {account_id}\n"
+                f"Schedule Label     : {schedule_label}\n"
+                f"Attempted At       : {now_utc_str} ({now_ist_str})\n"
+                f"Target Regions     : {regs_str}\n\n"
+                f"FAILURE DETAILS\n"
+                f"--------------------------------------------------------------------------------\n"
+                f"Reason: {error_msg or 'Unknown execution error'}\n\n"
+                f"RECOMMENDED ACTIONS\n"
+                f"--------------------------------------------------------------------------------\n"
+                f"1. Verify that the IAM Role ({role_arn}) exists in target account {account_id}.\n"
+                f"2. Ensure the IAM Role trust policy allows ArchLens Lambda Execution Role.\n"
+                f"3. Verify that the role has required ReadOnly permissions.\n\n"
+                f"Access ArchLens Management Console:\n"
+                f"{cf_url_line}\n"
+                f"================================================================================\n"
+                f"This is an automated system notification delivered via Amazon SNS."
+            )
 
-        if SNS_TOPIC_ARN:
-            try:
+            if SNS_TOPIC_ARN:
                 sns_client.publish(
                     TopicArn=SNS_TOPIC_ARN,
                     Subject=subject,
                     Message=email_body,
                 )
                 logger.info(f"Published scheduled scan failure email to {SNS_TOPIC_ARN}")
-            except Exception as se:
-                logger.warning(f"Failed to publish SNS failure email: {se}")
+        except Exception as se:
+            logger.warning(f"Failed to compile or publish SNS failure email: {se}")
 
     # Update lastRunAt and nextRunAt
     if sid and item:
